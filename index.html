@@ -128,7 +128,7 @@ details>summary::-webkit-details-marker{display:none}
 .trend{width:100%;height:auto;display:block}
 .trend .b-inc{fill:var(--s1)} .trend .b-exp{fill:var(--s2)}
 .trend .ax{fill:var(--muted);font-size:11px} .trend .axl{stroke:var(--line);stroke-width:1}
-.trend .tg{cursor:pointer} .trend .tg.on rect{fill:var(--track)}
+.trend .tg{cursor:pointer} .trend .tg.on rect{fill:var(--track)} .trend .b-bill{fill:var(--s1)}
 .legend{display:flex;gap:14px;font-size:12.5px;color:var(--muted);margin-bottom:4px}
 .legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .legend .sw.inc{background:var(--s1)} .legend .sw.exp{background:var(--s2)}
@@ -276,7 +276,7 @@ let S = Object.fromEntries(TABLES.map(t => [t, []]));
 let IX = {};
 const UI = { view: 'home', month: addMonths(monthOf(todayISO()), -1), instFilter: 'active',
              mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null,
-             f: { scope: 'month', card: '', people: [], status: '', q: '' } };
+             f: { scope: 'month', card: '', people: [], status: '', q: '' }, cf: { card: '', scope: 'month' } };
 
 // local mutations (DB first, then local copy)
 async function ins(t, rows) { const out = await db.insert(t, rows); S[t].push(...out); reindex(); return out; }
@@ -434,7 +434,7 @@ function render() {
       <h1>${LOGO}CardSplit${DEMO ? ' <span class="pill amber">demo</span>' : ''}</h1>
       ${UI.view === 'people' ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">${icon('left')}</button><span>${monthLabel(UI.view === 'money' ? UI.mMonth : UI.month)}</span><button data-action="nextMonth" aria-label="Next month">${icon('right')}</button></div>`}
     </header>
-    <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, money: viewMoney, people: viewPeople })[UI.view]()}</main>
+    <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, chart: viewChart, money: viewMoney, people: viewPeople })[UI.view]()}</main>
     <nav class="bottom"><div class="in">
       ${navBtn('home', icon('home'), 'Home')}${navBtn('tx', icon('card'), 'Cards')}
       <button class="add" data-action="addMenu" aria-label="Add"><span class="ic">${icon('plus')}</span><span>Add</span></button>
@@ -442,8 +442,8 @@ function render() {
     </div></nav>`;
   const q = $('#fq'); if (q && UI._focusQ) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); UI._focusQ = false; }
 }
-const cardsSeg = () => `<div class="seg" style="margin-top:6px"><button class="${UI.view === 'tx' ? 'on' : ''}" data-action="go" data-view="tx">Transactions</button><button class="${UI.view === 'inst' ? 'on' : ''}" data-action="go" data-view="inst">Installments</button></div>`;
-const navBtn = (v, ic, label) => `<button class="${UI.view === v || (v === 'tx' && UI.view === 'inst') ? 'on' : ''}" data-action="go" data-view="${v}"><span class="ic">${ic}</span><span>${label}</span></button>`;
+const cardsSeg = () => `<div class="seg" style="margin-top:6px"><button class="${UI.view === 'tx' ? 'on' : ''}" data-action="go" data-view="tx">Transactions</button><button class="${UI.view === 'inst' ? 'on' : ''}" data-action="go" data-view="inst">Installments</button><button class="${UI.view === 'chart' ? 'on' : ''}" data-action="go" data-view="chart">Chart</button></div>`;
+const navBtn = (v, ic, label) => `<button class="${UI.view === v || (v === 'tx' && (UI.view === 'inst' || UI.view === 'chart')) ? 'on' : ''}" data-action="go" data-view="${v}"><span class="ic">${ic}</span><span>${label}</span></button>`;
 
 /* ---------------- HOME ---------------- */
 // Bill total (from the PDF / typed in) vs the sum of items in the app for that card + month
@@ -512,6 +512,7 @@ function filteredTx() {
   const f = UI.f, q = f.q.trim().toLowerCase();
   return S.transactions.filter(t => {
     if (f.scope === 'month' && t.month !== UI.month) return false;
+    if (f.scope === 'year' && (t.month > UI.month || t.month < addMonths(UI.month, -11))) return false;
     if (f.card && t.card_id !== +f.card) return false;
     const cs = IX.chargesByTx.get(t.id) || [];
     const ppl = f.people || [];
@@ -536,6 +537,7 @@ function viewTx() {
   return `${cardsSeg()}
     <div class="seg" style="margin-top:6px">
       <button class="${f.scope === 'month' ? 'on' : ''}" data-action="txScope" data-v="month">${monthLabel(UI.month)}</button>
+      <button class="${f.scope === 'year' ? 'on' : ''}" data-action="txScope" data-v="year">Last 12 months</button>
       <button class="${f.scope === 'all' ? 'on' : ''}" data-action="txScope" data-v="all">All months</button></div>
     <input id="fq" class="in" style="margin-top:10px" placeholder="Search description or category" value="${esc(f.q)}" data-filter="q">
     <div class="filters">
@@ -548,6 +550,46 @@ function viewTx() {
     <div class="card list">${list.slice(0, 300).map(txItem).join('') || '<div class="empty">Nothing here. Tap + to add a transaction.</div>'}
     ${list.length > 300 ? `<div class="empty small">Showing first 300. Use the filters to narrow down.</div>` : ''}</div>`;
 }
+
+/* ---------------- CHART: who has the most bills ---------------- */
+function viewChart() {
+  const cf = UI.cf, cardId = cf.card ? +cf.card : 0;
+  const months = [...Array(12)].map((_, i) => addMonths(UI.month, i - 11));
+  const all = [];   // live charges on the picked card, statement months in the last 12
+  for (const c of S.charges) { const t = IX.tx.get(c.transaction_id); if (!t || isConv(t)) continue;
+    if (cardId && t.card_id !== cardId) continue; if (t.month < months[0] || t.month > UI.month) continue; all.push({ c, t }); }
+  const tot = new Map(months.map(m => [m, 0]));
+  for (const { c, t } of all) tot.set(t.month, r2(tot.get(t.month) + Number(c.amount)));
+  const max = Math.max(1, ...tot.values());
+  const W = 340, H = 150, base = 122, top = 10, gw = W / 12, bw = 14;
+  const y = v => base - (Math.max(0, v) / max) * (base - top);
+  const cols = months.map((m, i) => { const v = tot.get(m), x = i * gw + (gw - bw) / 2, yy = y(v), h = base - yy, r = Math.min(4, h, bw / 2);
+    return `<g class="tg${m === UI.month ? ' on' : ''}" data-action="billMonth" data-m="${m}"><rect x="${i * gw}" y="0" width="${gw}" height="${H}" fill="transparent"/>
+      <title>${monthLabel(m)}: ${peso(v)}</title>
+      ${h >= 0.5 ? `<path class="b-bill" d="M${x},${base} V${yy + r} Q${x},${yy} ${x + r},${yy} H${x + bw - r} Q${x + bw},${yy} ${x + bw},${yy + r} V${base} Z"/>` : ''}
+      <text x="${i * gw + gw / 2}" y="${base + 16}" text-anchor="middle" class="ax">${MON[+m.slice(5, 7) - 1]}</text></g>`; }).join('');
+  const rows = cf.scope === 'month' ? all.filter(x => x.t.month === UI.month) : all;
+  const per = new Map();
+  for (const { c } of rows) { const p = per.get(c.person_id) || { id: c.person_id, amt: 0, n: 0, owed: 0 };
+    p.amt = r2(p.amt + Number(c.amount)); p.n++; if (!isMe(c.person_id)) p.owed = r2(p.owed + balance(c)); per.set(c.person_id, p); }
+  const ranked = [...per.values()].filter(p => p.amt > 0.004).sort((a, b) => b.amt - a.amt);
+  const total = sum(ranked, p => p.amt), top1 = ranked[0]?.amt || 1;
+  const opt = (v, l, cur) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`;
+  return `${cardsSeg()}
+    <select class="in" style="margin-top:10px" data-cf="card">${opt('', 'All cards', cf.card)}${S.cards.map(c => opt(c.id, cardLabel(c.id), cf.card)).join('')}</select>
+    <div class="sec">Billed per month · last 12 months</div>
+    <div class="card"><svg viewBox="0 0 ${W} ${H}" class="trend" role="img" aria-label="Amount billed per statement month">
+      <line x1="0" x2="${W}" y1="${base}" y2="${base}" class="axl"/>${cols}</svg>
+      <div class="small" style="margin-top:4px"><b>${monthLabel(UI.month)}</b> · ${peso(tot.get(UI.month))} billed <span class="muted">· tap a month to see it</span></div></div>
+    <div class="sec">Who has the most bills</div>
+    <div class="seg"><button class="${cf.scope === 'month' ? 'on' : ''}" data-action="cfScope" data-v="month">${monthLabel(UI.month)}</button><button class="${cf.scope === 'year' ? 'on' : ''}" data-action="cfScope" data-v="year">Last 12 months</button></div>
+    <div class="card" style="margin-top:8px">${ranked.length ? ranked.map(p => `<button class="hb" data-action="billPerson" data-id="${p.id}">
+        <span class="hb-l"><span class="ell">${esc(personName(p.id))} <span class="muted">· ${p.n} item${p.n === 1 ? '' : 's'}</span></span><span><b>${peso(p.amt)}</b> <span class="muted">${Math.round(p.amt / total * 100)}%</span></span></span>
+        <span class="hb-t"><i style="width:${Math.max(2, p.amt / top1 * 100)}%"></i></span>
+        ${p.owed > 0.004 ? `<span class="small" style="display:block;margin-top:3px;color:var(--unpaid)">Still owes ${peso(p.owed)}</span>` : ''}</button>`).join('') : '<div class="empty">No bills for this period.</div>'}</div>
+    <p class="small muted">Tap a person to see their transactions. Lines converted to installment are left out.</p>`;
+}
+document.addEventListener('change', e => { const k = e.target.dataset?.cf; if (!k) return; UI.cf[k] = e.target.value; render(); });
 
 /* ---------------- transaction sheet ---------------- */
 function openTx(id) {
@@ -1579,6 +1621,9 @@ const A = {
   openPlan: el => openPlan(el.dataset.id ? +el.dataset.id : null),
   newPlan: () => openPlan(null),
   txScope: el => { UI.f.scope = el.dataset.v; render(); },
+  cfScope: el => { UI.cf.scope = el.dataset.v; render(); },
+  billMonth: el => { UI.month = el.dataset.m; render(); },
+  billPerson: el => { UI.f = { ...UI.f, people: [+el.dataset.id], card: UI.cf.card, scope: UI.cf.scope === 'month' ? 'month' : 'year', status: '', q: '' }; UI.view = 'tx'; render(); scrollTo(0, 0); },
   instFilter: el => { UI.instFilter = el.dataset.v; render(); },
   pickPeople: () => openPeoplePicker(),
   openConvert: el => openConvert(+el.dataset.id),
