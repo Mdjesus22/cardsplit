@@ -1,0 +1,5 @@
+# Never commit your personal data
+*PRIVATE*
+database/2-seed*
+*.xlsx
+*.pdf

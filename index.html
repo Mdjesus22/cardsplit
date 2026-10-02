@@ -1,0 +1,1162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<title>CardSplit</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='14' width='56' height='38' rx='7' fill='%230f766e'/%3E%3Crect x='4' y='22' width='56' height='7' fill='%23134e4a'/%3E%3Crect x='12' y='38' width='18' height='5' rx='2' fill='%23ccfbf1'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f4f5f7; --card:#ffffff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb; --soft:#f9fafb;
+  --brand:#0f766e; --brand-ink:#ffffff; --brand-soft:#ccfbf1;
+  --paid:#15803d; --paid-bg:#dcfce7; --part:#b45309; --part-bg:#fef3c7; --unpaid:#b91c1c; --unpaid-bg:#fee2e2;
+  --mine:#4b5563; --mine-bg:#e5e7eb; --shadow:0 1px 2px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.05);
+  --r:14px;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0b0f14; --card:#151b23; --ink:#e5e7eb; --muted:#9ca3af; --line:#263040; --soft:#111720;
+    --brand:#2dd4bf; --brand-ink:#04201d; --brand-soft:#134e4a;
+    --paid:#4ade80; --paid-bg:#14341f; --part:#fbbf24; --part-bg:#3b2c0b; --unpaid:#f87171; --unpaid-bg:#3a1414;
+    --mine:#cbd5e1; --mine-bg:#2a3340; --shadow:none;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;-webkit-text-size-adjust:100%}
+button,input,select,textarea{font:inherit;color:inherit}
+.wrap{max-width:680px;margin:0 auto;padding:0 16px 110px}
+header.top{position:sticky;top:0;z-index:20;background:var(--bg);display:flex;align-items:center;gap:8px;padding:10px 16px;max-width:680px;margin:0 auto}
+header.top h1{font-size:17px;margin:0;flex:1;font-weight:700;letter-spacing:.2px}
+.iconbtn{border:0;background:transparent;width:40px;height:40px;border-radius:10px;cursor:pointer;display:grid;place-items:center;font-size:20px}
+.iconbtn:active{background:var(--line)}
+.monthpick{display:flex;align-items:center;gap:2px;background:var(--card);border-radius:999px;box-shadow:var(--shadow);padding:2px}
+.monthpick button{border:0;background:transparent;width:34px;height:34px;border-radius:999px;cursor:pointer;font-size:18px}
+.monthpick span{min-width:78px;text-align:center;font-weight:600;font-size:14px}
+nav.bottom{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--card);border-top:1px solid var(--line);padding:6px 8px calc(6px + env(safe-area-inset-bottom))}
+nav.bottom .in{max-width:680px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr);align-items:center}
+nav.bottom button{border:0;background:transparent;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;font-size:11px;color:var(--muted);padding:4px 0}
+nav.bottom button .ic{font-size:20px;line-height:1}
+nav.bottom button.on{color:var(--brand);font-weight:600}
+nav.bottom button.add .ic{width:48px;height:48px;border-radius:50%;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;font-size:28px;margin-top:-18px;box-shadow:0 4px 12px rgba(15,118,110,.35)}
+.card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:14px;margin:10px 0}
+.sec{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:18px 2px 6px}
+.row{display:flex;align-items:center;gap:10px}
+.row.top{align-items:flex-start}
+.grow{flex:1;min-width:0}
+.right{text-align:right}
+.muted{color:var(--muted)}
+.small{font-size:12.5px}
+.big{font-size:22px;font-weight:700}
+.b{font-weight:600}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.tile{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:12px}
+.tile .lbl{font-size:12px;color:var(--muted)}
+.tile .val{font-size:18px;font-weight:700;margin-top:2px}
+.list .item{display:flex;gap:10px;align-items:flex-start;padding:12px 2px;border-bottom:1px solid var(--line);cursor:pointer}
+.list .item:last-child{border-bottom:0}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.chip{font-size:11.5px;padding:2px 8px;border-radius:999px;background:var(--mine-bg);color:var(--mine);white-space:nowrap}
+.chip.paid{background:var(--paid-bg);color:var(--paid)}
+.chip.partial{background:var(--part-bg);color:var(--part)}
+.chip.unpaid{background:var(--unpaid-bg);color:var(--unpaid)}
+.chip.brand{background:var(--brand-soft);color:var(--brand)}
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--mine-bg);color:var(--mine)}
+.pill.red{background:var(--unpaid-bg);color:var(--unpaid)}
+.pill.green{background:var(--paid-bg);color:var(--paid)}
+.pill.amber{background:var(--part-bg);color:var(--part)}
+.btn{border:1px solid var(--line);background:var(--card);border-radius:10px;padding:9px 14px;cursor:pointer;font-weight:600}
+.btn.pri{background:var(--brand);border-color:var(--brand);color:var(--brand-ink)}
+.btn.danger{color:var(--unpaid);border-color:var(--unpaid-bg)}
+.btn.sm{padding:5px 10px;font-size:13px;border-radius:8px}
+.btn.block{width:100%}
+.btn:disabled{opacity:.5}
+.seg{display:flex;background:var(--card);border-radius:10px;box-shadow:var(--shadow);padding:3px;gap:2px;overflow-x:auto}
+.seg button{flex:1;border:0;background:transparent;padding:7px 8px;border-radius:8px;cursor:pointer;font-size:13px;white-space:nowrap;color:var(--muted)}
+.seg button.on{background:var(--brand);color:var(--brand-ink);font-weight:600}
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+label.f{display:block;margin:10px 0}
+label.f>span{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+input.in,select.in,textarea.in{width:100%;border:1px solid var(--line);background:var(--soft);border-radius:10px;padding:10px 11px;min-height:42px}
+input.in:focus,select.in:focus,textarea.in:focus{outline:2px solid var(--brand);outline-offset:-1px;background:var(--card)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bar{height:8px;border-radius:999px;background:var(--line);overflow:hidden;margin:8px 0 4px}
+.bar>i{display:block;height:100%;background:var(--brand);border-radius:999px}
+.empty{text-align:center;color:var(--muted);padding:28px 10px}
+.kv{display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-size:13.5px;margin-top:8px}
+.kv .k{color:var(--muted)}
+details>summary{cursor:pointer;color:var(--brand);font-size:13px;font-weight:600;margin-top:8px;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+/* sheets */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--bg);width:100%;max-width:680px;max-height:94vh;border-radius:18px 18px 0 0;display:flex;flex-direction:column;overflow:hidden}
+.sheet .sh{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line);background:var(--card)}
+.sheet .sh h2{font-size:16px;margin:0;flex:1}
+.sheet .sb{padding:4px 16px 16px;overflow-y:auto;flex:1}
+.sheet .sf{display:flex;gap:8px;padding:10px 16px calc(10px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--card)}
+.sheet .sf .grow{display:flex;gap:8px;justify-content:flex-end}
+@media (min-width:720px){.overlay{align-items:center}.sheet{border-radius:18px;max-height:88vh}}
+.charge{border:1px solid var(--line);border-radius:12px;padding:10px;margin:8px 0;background:var(--card)}
+.charge .top{display:grid;grid-template-columns:1fr 130px 36px;gap:6px;align-items:center}
+.charge .pay{display:flex;justify-content:space-between;align-items:center;margin-top:8px;font-size:13px;gap:8px;flex-wrap:wrap}
+.charge .extra{display:grid;grid-template-columns:150px 1fr;gap:6px;margin-top:6px}
+.charge .plist{margin-top:6px;font-size:12.5px}
+.charge .plist div{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-top:1px dashed var(--line)}
+.sumline{font-size:13px;margin:6px 2px}
+.sumline.bad{color:var(--unpaid);font-weight:600}
+.toast{position:fixed;left:50%;bottom:92px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;z-index:80;font-size:14px;max-width:90vw;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.drawer{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.45)}
+.drawer .pane{position:absolute;left:0;top:0;bottom:0;width:min(300px,85vw);background:var(--card);padding:18px 14px;display:flex;flex-direction:column;gap:4px}
+.drawer .pane button{border:0;background:transparent;text-align:left;padding:12px 10px;border-radius:10px;cursor:pointer;font-size:15px}
+.drawer .pane button:active{background:var(--line)}
+.center{min-height:100vh;display:grid;place-items:center;padding:16px}
+.loginbox{width:100%;max-width:380px}
+.err{color:var(--unpaid);font-size:13px;margin-top:8px}
+.linkish{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font-weight:600}
+.over{color:var(--unpaid);font-weight:600}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module">
+/* =====================================================================
+   CardSplit — personal credit card tracker
+   1) Paste your Supabase Project URL and Publishable key below.
+   2) Upload this file to GitHub Pages (see SETUP guide).
+   ===================================================================== */
+const CONFIG = {
+  SUPABASE_URL: '',   // e.g. 'https://abcdefghijkl.supabase.co'
+  SUPABASE_KEY: '',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
+};
+
+const VERSION = '1.1';
+const params = new URLSearchParams(location.search);
+const DEMO = params.has('demo');
+const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections'];
+const CASCADE = { transactions:[['charges','transaction_id']], charges:[['collections','charge_id']],
+                  installments:[['installment_shares','installment_id'],['transactions','installment_id']] };
+const DEFAULTS = { cards:{active:true}, people:{kind:'person',active:true}, statements:{paid_to_bank:false},
+                   installments:{status:'active'}, transactions:{source:'manual'} };
+
+/* ---------------- helpers ---------------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const r2 = n => Math.round((Number(n || 0) + Number.EPSILON) * 100) / 100;
+const PH = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' });
+const peso = n => PH.format(r2(n));
+const pad = n => String(n).padStart(2, '0');
+const todayISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; };
+const monthOf = iso => iso.slice(0, 7) + '-01';
+const addMonths = (m, k) => { const [y, mo] = m.split('-').map(Number); const t = y*12 + (mo-1) + k; return `${Math.floor(t/12)}-${pad(t%12+1)}-01`; };
+const monthDiff = (a, b) => { const [ya, ma] = a.split('-').map(Number); const [yb, mb] = b.split('-').map(Number); return (ya*12+ma) - (yb*12+mb); };
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const monthLabel = m => m ? `${MON[+m.slice(5,7)-1]} ${m.slice(0,4)}` : '';
+const dateLabel = iso => iso ? `${MON[+iso.slice(5,7)-1]} ${+iso.slice(8,10)}` : '';
+const dateLabelY = iso => iso ? `${MON[+iso.slice(5,7)-1]} ${+iso.slice(8,10)}, ${iso.slice(0,4)}` : '';
+const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00') - new Date(a + 'T00:00')) / 86400000);
+const groupBy = (arr, key) => { const m = new Map(); for (const r of arr) { const k = r[key]; if (!m.has(k)) m.set(k, []); m.get(k).push(r); } return m; };
+const num = v => (v === '' || v == null) ? null : Number(v);
+const sum = (arr, f = x => x) => r2(arr.reduce((a, x) => a + Number(f(x) || 0), 0));
+
+/* ---------------- data layer ---------------- */
+function cascadeLocal(store, t, id) {
+  store[t] = store[t].filter(r => r.id !== id);
+  for (const [child, fk] of (CASCADE[t] || [])) {
+    for (const r of store[child].filter(r => r[fk] === id)) cascadeLocal(store, child, r.id);
+  }
+}
+function makeDemoDB(seed) {
+  const data = structuredClone(seed); const next = {};
+  for (const t of TABLES) { data[t] = data[t] || []; next[t] = data[t].reduce((a, r) => Math.max(a, r.id), 0) + 1; }
+  return {
+    async loadAll() { return structuredClone(data); },
+    async insert(t, rows) {
+      const out = rows.map(r => ({ ...(DEFAULTS[t] || {}), ...r, id: next[t]++ }));
+      if (t === 'transactions') for (const r of out) if (r.installment_id && data.transactions.some(x => x.installment_id === r.installment_id && x.installment_no === r.installment_no)) throw new Error('duplicate installment month');
+      data[t].push(...structuredClone(out)); return out;
+    },
+    async update(t, id, patch) { const r = data[t].find(x => x.id === id); Object.assign(r, patch); return { ...r }; },
+    async remove(t, id) { cascadeLocal(data, t, id); },
+  };
+}
+function makeSupabaseDB(sb) {
+  return {
+    async loadAll() {
+      const out = {};
+      await Promise.all(TABLES.map(async t => {
+        let rows = [], from = 0;
+        for (;;) {
+          const { data, error } = await sb.from(t).select('*').order('id').range(from, from + 999);
+          if (error) throw error;
+          rows = rows.concat(data); if (data.length < 1000) break; from += 1000;
+        }
+        out[t] = rows;
+      }));
+      return out;
+    },
+    async insert(t, rows) { const { data, error } = await sb.from(t).insert(rows).select(); if (error) throw error; return data; },
+    async update(t, id, patch) { const { data, error } = await sb.from(t).update(patch).eq('id', id).select().single(); if (error) throw error; return data; },
+    async remove(t, id) { const { error } = await sb.from(t).delete().eq('id', id); if (error) throw error; },
+  };
+}
+
+let sb = null, db = null;
+let S = Object.fromEntries(TABLES.map(t => [t, []]));
+let IX = {};
+const UI = { view: 'home', month: addMonths(monthOf(todayISO()), -1), instFilter: 'active',
+             f: { scope: 'month', card: '', person: '', status: '', q: '' } };
+
+// local mutations (DB first, then local copy)
+async function ins(t, rows) { const out = await db.insert(t, rows); S[t].push(...out); reindex(); return out; }
+async function upd(t, id, patch) { const out = await db.update(t, id, patch); const i = S[t].findIndex(r => r.id === id); if (i >= 0) S[t][i] = out; reindex(); return out; }
+async function del(t, id) { await db.remove(t, id); cascadeLocal(S, t, id); reindex(); }
+
+function reindex() {
+  IX.card = new Map(S.cards.map(r => [r.id, r]));
+  IX.person = new Map(S.people.map(r => [r.id, r]));
+  IX.inst = new Map(S.installments.map(r => [r.id, r]));
+  IX.tx = new Map(S.transactions.map(r => [r.id, r]));
+  IX.charge = new Map(S.charges.map(r => [r.id, r]));
+  IX.chargesByTx = groupBy(S.charges, 'transaction_id');
+  IX.chargesByPerson = groupBy(S.charges, 'person_id');
+  IX.collByCharge = groupBy(S.collections, 'charge_id');
+  IX.sharesByInst = groupBy(S.installment_shares, 'installment_id');
+  IX.txByInst = groupBy(S.transactions.filter(t => t.installment_id), 'installment_id');
+  IX.stmt = new Map(S.statements.map(s => [s.card_id + '|' + s.month, s]));
+  IX.me = (S.people.find(p => p.kind === 'me') || {}).id;
+}
+const received = ch => sum(IX.collByCharge.get(ch.id) || [], c => c.amount);
+const balance = ch => r2(Number(ch.amount) - received(ch));
+const isMe = pid => IX.person.get(pid)?.kind === 'me';
+const personName = pid => IX.person.get(pid)?.name ?? '?';
+function chargeStatus(ch) {
+  if (isMe(ch.person_id)) return 'mine';
+  const b = balance(ch);
+  if (b <= 0.004) return 'paid';
+  return received(ch) > 0.004 ? 'partial' : 'unpaid';
+}
+const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine' };
+const cardLabel = id => { const c = IX.card.get(id); return c ? (c.bank || c.code) + (c.last4 ? ' ••' + c.last4 : '') : '?'; };
+const cardCode = id => IX.card.get(id)?.code ?? '?';
+function dueDate(cardId, month) {
+  const s = IX.stmt.get(cardId + '|' + month);
+  if (s?.due_date) return s.due_date;
+  const c = IX.card.get(cardId); if (!c?.due_day) return null;
+  const dm = addMonths(month, 1); const [y, m] = dm.split('-').map(Number);
+  return `${y}-${pad(m)}-${pad(Math.min(c.due_day, new Date(y, m, 0).getDate()))}`;
+}
+function planInfo(p, asOf) {
+  const monthly = Number(p.monthly_amount);
+  const total = r2(monthly * p.months);
+  const orig = p.original_amount == null ? null : Number(p.original_amount);
+  const interest = orig == null ? null : r2(total - orig);
+  const ended = p.status === 'ended_early';
+  const billed = Math.max(0, Math.min(p.months, monthDiff(asOf, p.first_month) + 1));
+  const left = ended ? 0 : p.months - billed;
+  const status = ended ? 'ended' : billed >= p.months ? 'done' : billed === 0 ? 'notyet' : 'active';
+  const charges = (IX.txByInst.get(p.id) || []).flatMap(t => IX.chargesByTx.get(t.id) || []).filter(c => !isMe(c.person_id));
+  return { monthly, total, orig, interest, perMonth: interest == null ? null : r2(interest / p.months),
+           pct: orig ? interest / orig : null, billed, left, remaining: r2(left * monthly), status,
+           last: addMonths(p.first_month, p.months - 1), owed: sum(charges, balance), collected: sum(charges, received) };
+}
+
+/* ---------------- installments: create missing months ---------------- */
+function splitFromShares(p) {
+  const shares = (IX.sharesByInst.get(p.id) || []).filter(s => Number(s.monthly_share) > 0)
+                  .map(s => ({ person_id: s.person_id, amount: r2(s.monthly_share) }));
+  if (!shares.length) return [{ person_id: IX.me, amount: r2(p.monthly_amount) }];
+  const diff = r2(Number(p.monthly_amount) - sum(shares, s => s.amount));
+  if (Math.abs(diff) >= 0.005) {
+    const me = shares.find(s => s.person_id === IX.me);
+    if (me) me.amount = r2(me.amount + diff);
+    else if (diff > 0 && IX.me) shares.push({ person_id: IX.me, amount: diff });
+    else shares[shares.length - 1].amount = r2(shares[shares.length - 1].amount + diff);
+  }
+  return shares;
+}
+async function ensureInstallmentMonths() {
+  const cur = monthOf(todayISO());
+  const todo = [];
+  for (const p of S.installments) {
+    if (p.status !== 'active') continue;
+    const have = new Set((IX.txByInst.get(p.id) || []).map(t => t.installment_no));
+    const lastNo = Math.max(0, ...have);
+    const upto = Math.min(p.months, monthDiff(cur, p.first_month) + 1);
+    for (let no = lastNo + 1; no <= upto; no++) todo.push({ p, no });
+  }
+  if (!todo.length) return 0;
+  const txs = await ins('transactions', todo.map(({ p, no }) => ({
+    card_id: p.card_id, month: addMonths(p.first_month, no - 1), txn_date: null, description: p.item,
+    category: 'LOAN', amount: r2(p.monthly_amount), installment_id: p.id, installment_no: no, source: 'auto' })));
+  const rows = [];
+  for (const t of txs) for (const c of splitFromShares(IX.inst.get(t.installment_id))) rows.push({ ...c, transaction_id: t.id });
+  await ins('charges', rows);
+  return txs.length;
+}
+
+/* ---------------- toast / confirm / sheets ---------------- */
+function toast(msg) { document.querySelectorAll('.toast').forEach(t => t.remove()); const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 2600); }
+const SHEETS = [];
+function openSheet(spec) { SHEETS.push(spec); drawSheets(); }
+function closeSheet() { SHEETS.pop(); drawSheets(); }
+function drawSheets() {
+  document.querySelectorAll('.overlay').forEach(e => e.remove());
+  SHEETS.forEach((s, i) => {
+    const o = document.createElement('div'); o.className = 'overlay'; o.dataset.idx = i;
+    o.innerHTML = `<div class="sheet" role="dialog" aria-label="${esc(s.title)}"><div class="sh"><h2>${esc(s.title)}</h2><button class="iconbtn" data-action="closeSheet" aria-label="Close">✕</button></div>
+      <div class="sb">${s.body()}</div>${s.foot ? `<div class="sf">${s.foot()}</div>` : ''}</div>`;
+    o.addEventListener('click', e => { if (e.target === o) A.closeSheet(); });
+    document.body.appendChild(o);
+    s.mount?.(o);
+  });
+}
+function redrawTop() {
+  const s = SHEETS[SHEETS.length - 1]; if (!s) return;
+  const o = document.querySelector(`.overlay[data-idx="${SHEETS.length - 1}"]`);
+  const body = o.querySelector('.sb'); const st = body.scrollTop;
+  body.innerHTML = s.body(); if (s.foot) o.querySelector('.sf').innerHTML = s.foot();
+  body.scrollTop = st; s.mount?.(o);
+}
+function ask(message, okLabel = 'OK', danger = false) {
+  return new Promise(res => {
+    openSheet({ title: 'Please confirm', body: () => `<p>${esc(message)}</p>`,
+      foot: () => `<div class="grow"><button class="btn" data-action="askNo">Cancel</button><button class="btn ${danger ? 'danger' : 'pri'}" data-action="askYes">${esc(okLabel)}</button></div>`,
+      resolve: res });
+  });
+}
+
+/* ---------------- main render ---------------- */
+function render() {
+  const root = $('#root');
+  root.innerHTML = `
+    <header class="top">
+      <button class="iconbtn" data-action="menu" aria-label="Menu">☰</button>
+      <h1>CardSplit${DEMO ? ' <span class="pill amber">demo</span>' : ''}</h1>
+      ${UI.view === 'people' ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">‹</button><span>${monthLabel(UI.month)}</span><button data-action="nextMonth" aria-label="Next month">›</button></div>`}
+    </header>
+    <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, people: viewPeople })[UI.view]()}</main>
+    <nav class="bottom"><div class="in">
+      ${navBtn('home', '⌂', 'Home')}${navBtn('tx', '≡', 'Transactions')}
+      <button class="add" data-action="newTx" aria-label="Add transaction"><span class="ic">+</span><span>Add</span></button>
+      ${navBtn('inst', '◷', 'Installments')}${navBtn('people', '☺', 'People')}
+    </div></nav>`;
+  const q = $('#fq'); if (q && UI._focusQ) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); UI._focusQ = false; }
+}
+const navBtn = (v, ic, label) => `<button class="${UI.view === v ? 'on' : ''}" data-action="go" data-view="${v}"><span class="ic">${ic}</span><span>${label}</span></button>`;
+
+/* ---------------- HOME ---------------- */
+function viewHome() {
+  const m = UI.month, today = todayISO();
+  const txs = S.transactions.filter(t => t.month === m);
+  const charges = txs.flatMap(t => IX.chargesByTx.get(t.id) || []);
+  const others = charges.filter(c => !isMe(c.person_id));
+  const total = sum(txs, t => t.amount), mine = sum(charges.filter(c => isMe(c.person_id)), c => c.amount);
+  const cardIds = [...new Set([...S.cards.filter(c => c.active).map(c => c.id), ...txs.map(t => t.card_id)])];
+  const cardRows = cardIds.map(id => {
+    const ct = txs.filter(t => t.card_id === id); const cch = ct.flatMap(t => IX.chargesByTx.get(t.id) || []);
+    const st = IX.stmt.get(id + '|' + m); const due = dueDate(id, m); const paid = !!st?.paid_to_bank;
+    let badge = '';
+    if (paid) badge = `<span class="pill green">Paid ✓</span>`;
+    else if (due && ct.length) { const d = daysBetween(today, due); badge = d < 0 ? `<span class="pill red">Overdue ${-d}d</span>` : d <= 7 ? `<span class="pill amber">Due in ${d}d</span>` : `<span class="pill">Due in ${d}d</span>`; }
+    return `<div class="item" data-action="openStmt" data-card="${id}">
+      <div class="grow"><div class="b ell">${esc(cardLabel(id))}</div>
+        <div class="small muted">Due ${due ? dateLabelY(due) : '— set due day'} · ${ct.length} item${ct.length === 1 ? '' : 's'}</div>
+        <div class="small muted">Mine ${peso(sum(cch.filter(c => isMe(c.person_id)), c => c.amount))} · Others ${peso(sum(cch.filter(c => !isMe(c.person_id)), c => c.amount))}</div></div>
+      <div class="right"><div class="b">${peso(st?.total_due ?? sum(ct, t => t.amount))}</div>${badge}</div></div>`;
+  }).join('');
+  const byPerson = [...groupBy(others, 'person_id')].map(([pid, cs]) => ({ pid, bal: sum(cs, balance), amt: sum(cs, c => c.amount) }))
+    .filter(x => Math.abs(x.bal) > 0.004).sort((a, b) => b.bal - a.bal);
+  const promised = S.charges.filter(c => c.promise_date && !isMe(c.person_id) && balance(c) > 0.004).sort((a, b) => a.promise_date.localeCompare(b.promise_date)).slice(0, 8);
+  const allOwed = sum(S.charges.filter(c => !isMe(c.person_id)), balance);
+  return `
+    <div class="sec">Statement ${monthLabel(m)} · due ${monthLabel(addMonths(m, 1))}</div>
+    <div class="tiles">
+      <div class="tile"><div class="lbl">Total billed</div><div class="val">${peso(total)}</div></div>
+      <div class="tile"><div class="lbl">Mine</div><div class="val">${peso(mine)}</div></div>
+      <div class="tile"><div class="lbl">Still to collect</div><div class="val" style="color:var(--unpaid)">${peso(sum(others, balance))}</div></div>
+      <div class="tile"><div class="lbl">Collected</div><div class="val" style="color:var(--paid)">${peso(sum(others, received))}</div></div>
+    </div>
+    <button class="btn block" style="margin-top:10px" data-action="upload">📄 Upload statement PDF</button>
+    <div class="sec">Cards — tap to set due date / mark paid</div>
+    <div class="card list">${cardRows || '<div class="empty">No cards yet. Add one from the ☰ menu.</div>'}</div>
+    <div class="sec">Who owes for ${monthLabel(m)}</div>
+    <div class="card list">${byPerson.map(x => `<div class="item" data-action="openPerson" data-id="${x.pid}"><div class="grow b">${esc(personName(x.pid))}</div><div class="right"><div class="b">${peso(x.bal)}</div><div class="small muted">of ${peso(x.amt)}</div></div></div>`).join('') || '<div class="empty">Nobody owes you for this month 🎉</div>'}</div>
+    ${promised.length ? `<div class="sec">Promised payments</div><div class="card list">${promised.map(c => { const t = IX.tx.get(c.transaction_id); const late = c.promise_date < today;
+      return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b">${esc(personName(c.person_id))}</div><div class="small muted ell">${esc(t.description)} · ${monthLabel(t.month)}</div></div><div class="right"><div class="b">${peso(balance(c))}</div><span class="pill ${late ? 'red' : 'amber'}">${late ? 'Late · ' : ''}${dateLabel(c.promise_date)}</span></div></div>`; }).join('')}</div>` : ''}
+    <div class="card row"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(allOwed)}</div></div><button class="btn sm" data-action="go" data-view="people">See people</button></div>`;
+}
+
+/* ---------------- TRANSACTIONS ---------------- */
+function filteredTx() {
+  const f = UI.f, q = f.q.trim().toLowerCase();
+  return S.transactions.filter(t => {
+    if (f.scope === 'month' && t.month !== UI.month) return false;
+    if (f.card && t.card_id !== +f.card) return false;
+    const cs = IX.chargesByTx.get(t.id) || [];
+    if (f.person && !cs.some(c => c.person_id === +f.person)) return false;
+    if (f.status) { const pool = f.person ? cs.filter(c => c.person_id === +f.person) : cs; if (!pool.some(c => chargeStatus(c) === f.status)) return false; }
+    if (q && !(t.description || '').toLowerCase().includes(q) && !(t.category || '').toLowerCase().includes(q)) return false;
+    return true;
+  }).sort((a, b) => (b.month.localeCompare(a.month)) || ((b.txn_date || '').localeCompare(a.txn_date || '')) || (b.id - a.id));
+}
+function txItem(t) {
+  const cs = IX.chargesByTx.get(t.id) || [];
+  const inst = t.installment_id ? IX.inst.get(t.installment_id) : null;
+  return `<div class="item" data-action="openTx" data-id="${t.id}">
+    <div class="grow"><div class="b ell">${esc(t.description)}</div>
+      <div class="small muted">${t.txn_date ? dateLabel(t.txn_date) : monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
+      <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' ? '' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
+    <div class="right b">${peso(t.amount)}</div></div>`;
+}
+function viewTx() {
+  const f = UI.f, list = filteredTx();
+  const opt = (v, l, cur) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`;
+  return `
+    <div class="seg" style="margin-top:6px">
+      <button class="${f.scope === 'month' ? 'on' : ''}" data-action="txScope" data-v="month">${monthLabel(UI.month)}</button>
+      <button class="${f.scope === 'all' ? 'on' : ''}" data-action="txScope" data-v="all">All months</button></div>
+    <input id="fq" class="in" style="margin-top:10px" placeholder="Search description or category" value="${esc(f.q)}" data-filter="q">
+    <div class="filters">
+      <select class="in" data-filter="card">${opt('', 'All cards', f.card)}${S.cards.map(c => opt(c.id, c.code, f.card)).join('')}</select>
+      <select class="in" data-filter="person">${opt('', 'Everyone', f.person)}${S.people.map(p => opt(p.id, p.name, f.person)).join('')}</select>
+      <select class="in" data-filter="status" style="grid-column:1/-1">${opt('', 'Any status', f.status)}${['unpaid', 'partial', 'paid', 'mine'].map(s => opt(s, STATUS_LABEL[s], f.status)).join('')}</select>
+    </div>
+    <div class="sumline muted">${list.length} transaction${list.length === 1 ? '' : 's'} · ${peso(sum(list, t => t.amount))}</div>
+    <div class="card list">${list.slice(0, 300).map(txItem).join('') || '<div class="empty">Nothing here. Tap + to add a transaction.</div>'}
+    ${list.length > 300 ? `<div class="empty small">Showing first 300. Use the filters to narrow down.</div>` : ''}</div>`;
+}
+
+/* ---------------- transaction sheet ---------------- */
+function openTx(id) {
+  const t = id ? IX.tx.get(id) : null;
+  const cs = t ? (IX.chargesByTx.get(t.id) || []) : [];
+  const card = S.cards.find(c => c.active) || S.cards[0];
+  const d = t ? { ...t, amount: String(t.amount) } :
+    { id: null, description: '', amount: '', card_id: card?.id, month: UI.month, txn_date: todayISO(), category: '', installment_id: null };
+  d.charges = t ? cs.map(c => ({ id: c.id, person_id: c.person_id, amount: String(c.amount), promise_date: c.promise_date || '', note: c.note || '' }))
+                : [{ id: null, person_id: IX.me, amount: '', promise_date: '', note: '' }];
+  const sheet = { title: t ? 'Transaction' : 'New transaction', draft: d, body: () => txBody(d), foot: () => txFoot(d), mount: o => bindDraft(o, d, sheet) };
+  openSheet(sheet);
+}
+function txSumLine(d) {
+  const amt = r2(num(d.amount)), as = sum(d.charges, c => num(c.amount));
+  const diff = r2(amt - as);
+  return Math.abs(diff) < 0.005 ? `Assigned ${peso(as)} of ${peso(amt)} ✓` : `Assigned ${peso(as)} of ${peso(amt)} — ${diff > 0 ? peso(diff) + ' not assigned yet' : peso(-diff) + ' too much'}`;
+}
+function txBody(d) {
+  const inst = d.installment_id ? IX.inst.get(d.installment_id) : null;
+  const cats = [...new Set(S.transactions.map(t => t.category).filter(Boolean))].sort();
+  const people = S.people.filter(p => p.active || d.charges.some(c => c.person_id === p.id));
+  return `
+    ${inst ? `<div class="card small" style="margin-top:12px">Installment <b>${d.installment_no} of ${inst.months}</b> · ${esc(inst.item)} <button class="linkish" data-action="openPlan" data-id="${inst.id}">open plan</button></div>` : ''}
+    <label class="f"><span>Description</span><input class="in" data-k="description" value="${esc(d.description)}" placeholder="e.g. Lazada – phone case"></label>
+    <div class="grid2">
+      <label class="f"><span>Amount (₱)</span><input class="in" data-k="amount" type="number" inputmode="decimal" step="0.01" value="${esc(d.amount)}"></label>
+      <label class="f"><span>Card</span><select class="in" data-k="card_id" data-num>${S.cards.map(c => `<option value="${c.id}" ${c.id === d.card_id ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}</select></label>
+      <label class="f"><span>Statement month</span><input class="in" type="month" data-k="month" data-month value="${d.month.slice(0, 7)}"></label>
+      <label class="f"><span>Date bought</span><input class="in" type="date" data-k="txn_date" value="${esc(d.txn_date || '')}"></label>
+    </div>
+    <label class="f"><span>Category</span><input class="in" data-k="category" list="cats" value="${esc(d.category || '')}"><datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
+    <div class="row" style="margin-top:14px"><div class="grow b">Who pays</div>
+      <button class="btn sm" data-action="splitEq">Split equally</button><button class="btn sm" data-action="addCharge">+ Person</button></div>
+    <div class="sumline" id="sumline">${txSumLine(d)}</div>
+    ${d.charges.map((c, i) => chargeBox(d, c, i, people)).join('')}
+    ${d.id && d.charges.some(c => c.id && !isMe(c.person_id) && balance(IX.charge.get(c.id) || { id: 0, amount: 0 }) > 0.004) ? `<button class="btn block" style="margin-top:6px" data-action="markAllPaid">Mark everyone paid (today)</button>` : ''}`;
+}
+function chargeBox(d, c, i, people) {
+  const saved = c.id ? IX.charge.get(c.id) : null;
+  const pays = saved ? (IX.collByCharge.get(saved.id) || []) : [];
+  const st = saved ? chargeStatus(saved) : null;
+  return `<div class="charge">
+    <div class="top">
+      <select class="in" data-ci="${i}" data-ck="person_id">${people.map(p => `<option value="${p.id}" ${p.id === c.person_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      <input class="in" data-ci="${i}" data-ck="amount" type="number" inputmode="decimal" step="0.01" value="${esc(c.amount)}" placeholder="₱">
+      <button class="iconbtn" data-action="rmCharge" data-i="${i}" aria-label="Remove">✕</button>
+    </div>
+    ${saved && !isMe(c.person_id) ? `
+      <div class="pay"><span><span class="chip ${st}">${STATUS_LABEL[st]}</span> Received ${peso(received(saved))} · Left <b>${peso(balance(saved))}</b></span>
+        <button class="btn sm" data-action="addPay" data-charge="${saved.id}">+ Payment</button></div>
+      ${pays.length ? `<div class="plist">${pays.map(p => `<div><span>${dateLabelY(p.received_on)} · ${peso(p.amount)}${p.note ? ' · ' + esc(p.note) : ''}</span><button class="linkish" data-action="rmPay" data-id="${p.id}">remove</button></div>`).join('')}</div>` : ''}
+      <div class="extra">
+        <input class="in" type="date" data-ci="${i}" data-ck="promise_date" value="${esc(c.promise_date)}" title="Will pay the rest on">
+        <input class="in" data-ci="${i}" data-ck="note" value="${esc(c.note)}" placeholder="Note (e.g. pay on 15th salary)">
+      </div>
+      <div class="small muted" style="margin-top:4px">Date = when they promised to pay the rest</div>` : ''}
+    ${!saved && !isMe(c.person_id) ? `<div class="small muted" style="margin-top:6px">Save first, then you can add payments.</div>` : ''}
+  </div>`;
+}
+const txFoot = d => `${d.id ? `<button class="btn danger" data-action="delTx">Delete</button>` : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveTx">Save</button></div>`;
+
+function bindDraft(o, d) {
+  o.querySelectorAll('[data-k]').forEach(el => el.addEventListener('input', () => {
+    let v = el.value;
+    if (el.hasAttribute('data-num')) v = Number(v);
+    if (el.hasAttribute('data-month')) v = v ? v + '-01' : d[el.dataset.k];
+    d[el.dataset.k] = v;
+    const sl = o.querySelector('#sumline'); if (sl) { sl.innerHTML = txSumLine(d); sl.className = 'sumline' + (sl.textContent.includes('✓') ? '' : ' bad'); }
+  }));
+  o.querySelectorAll('[data-ci]').forEach(el => el.addEventListener('input', () => {
+    const c = d.charges[+el.dataset.ci]; c[el.dataset.ck] = el.dataset.ck === 'person_id' ? Number(el.value) : el.value;
+    const sl = o.querySelector('#sumline'); if (sl) { sl.innerHTML = txSumLine(d); sl.className = 'sumline' + (sl.textContent.includes('✓') ? '' : ' bad'); }
+  }));
+  o.querySelectorAll('select[data-ci]').forEach(el => el.addEventListener('change', () => redrawTop()));
+  const sl = o.querySelector('#sumline'); if (sl) sl.className = 'sumline' + (sl.textContent.includes('✓') ? '' : ' bad');
+}
+
+async function saveTx() {
+  const d = SHEETS[SHEETS.length - 1].draft;
+  const amount = r2(num(d.amount));
+  if (!d.description.trim()) return toast('Add a description');
+  if (!amount) return toast('Add an amount');
+  if (!d.card_id) return toast('Pick a card (add one from ☰ → Cards)');
+  const charges = d.charges.map(c => ({ ...c, amount: r2(num(c.amount)) }));
+  if (!charges.length) return toast('Add at least one person');
+  if (new Set(charges.map(c => c.person_id)).size !== charges.length) return toast('Same person is listed twice');
+  if (Math.abs(r2(amount - sum(charges, c => c.amount))) >= 0.005) return toast('Who pays must add up to the amount');
+  const row = { description: d.description.trim(), amount, card_id: d.card_id, month: d.month, txn_date: d.txn_date || null, category: (d.category || '').trim() || null };
+  try {
+    let txId = d.id;
+    if (d.id) await upd('transactions', d.id, row);
+    else { const [t] = await ins('transactions', [{ ...row, source: 'manual' }]); txId = t.id; }
+    const old = IX.chargesByTx.get(txId) || [];
+    const keep = new Set(charges.filter(c => c.id).map(c => c.id));
+    const dropping = old.filter(o => !keep.has(o.id));
+    const lost = sum(dropping.flatMap(o => IX.collByCharge.get(o.id) || []), p => p.amount);
+    if (lost && !(await ask(`Removing a person also removes ${peso(lost)} of their recorded payments. Continue?`, 'Remove', true))) return;
+    for (const o of dropping) await del('charges', o.id);
+    for (const c of charges.filter(c => c.id)) {
+      const o = IX.charge.get(c.id);
+      const patch = { person_id: c.person_id, amount: c.amount, promise_date: c.promise_date || null, note: (c.note || '').trim() || null };
+      if (o.person_id !== patch.person_id || Number(o.amount) !== patch.amount || (o.promise_date || null) !== patch.promise_date || (o.note || null) !== patch.note) await upd('charges', c.id, patch);
+    }
+    const fresh = charges.filter(c => !c.id).map(c => ({ transaction_id: txId, person_id: c.person_id, amount: c.amount, promise_date: c.promise_date || null, note: (c.note || '').trim() || null }));
+    if (fresh.length) await ins('charges', fresh);
+    closeSheet(); render(); toast('Saved');
+  } catch (e) { console.error(e); toast('Could not save: ' + (e.message || e)); }
+}
+
+function openPay(chargeId) {
+  const ch = IX.charge.get(chargeId);
+  const d = { amount: String(balance(ch)), received_on: todayISO(), note: '' };
+  openSheet({ title: `Payment from ${personName(ch.person_id)}`, draft: d,
+    body: () => `<p class="small muted">Still to pay: <b>${peso(balance(ch))}</b> of ${peso(ch.amount)}</p>
+      <label class="f"><span>Amount received (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
+      <label class="f"><span>Date received</span><input class="in" type="date" data-k="received_on" value="${d.received_on}"></label>
+      <label class="f"><span>Note (optional)</span><input class="in" data-k="note" placeholder="e.g. GCash"></label>`,
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="savePay" data-charge="${chargeId}">Save payment</button></div>`,
+    mount: o => bindDraft(o, d) });
+}
+
+/* ---------------- statement (due date / paid to bank) ---------------- */
+function openStmt(cardId) {
+  const m = UI.month, st = IX.stmt.get(cardId + '|' + m);
+  const d = { due_date: dueDate(cardId, m) || '', total_due: st?.total_due ?? '', min_due: st?.min_due ?? '', paid_to_bank: !!st?.paid_to_bank, paid_on: st?.paid_on || '', note: st?.note || '' };
+  const txTotal = sum(S.transactions.filter(t => t.month === m && t.card_id === cardId), t => t.amount);
+  openSheet({ title: `${cardLabel(cardId)} · ${monthLabel(m)}`, draft: d,
+    body: () => `
+      <p class="small muted">Items in the app for this statement: <b>${peso(txTotal)}</b></p>
+      <label class="f"><span>Due date</span><input class="in" type="date" data-k="due_date" value="${esc(d.due_date)}"></label>
+      <div class="grid2">
+        <label class="f"><span>Total due on bill (optional)</span><input class="in" type="number" step="0.01" data-k="total_due" value="${esc(d.total_due)}"></label>
+        <label class="f"><span>Minimum due (optional)</span><input class="in" type="number" step="0.01" data-k="min_due" value="${esc(d.min_due)}"></label>
+      </div>
+      <label class="f row"><input type="checkbox" id="ptb" ${d.paid_to_bank ? 'checked' : ''} style="width:22px;height:22px"> <span style="margin:0;font-size:15px;color:var(--ink)">I paid this bill to the bank</span></label>
+      <label class="f"><span>Paid on</span><input class="in" type="date" data-k="paid_on" value="${esc(d.paid_on)}"></label>
+      <label class="f"><span>Note</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
+      <button class="btn block" data-action="filterCard" data-card="${cardId}">See this card's transactions</button>`,
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveStmt" data-card="${cardId}">Save</button></div>`,
+    mount: o => { bindDraft(o, d); o.querySelector('#ptb').addEventListener('change', e => { d.paid_to_bank = e.target.checked; if (e.target.checked && !d.paid_on) { d.paid_on = todayISO(); o.querySelector('[data-k=paid_on]').value = d.paid_on; } }); } });
+}
+
+/* ---------------- INSTALLMENTS ---------------- */
+function viewInst() {
+  const asOf = UI.month;
+  const all = S.installments.map(p => ({ p, i: planInfo(p, asOf) }));
+  const counts = { active: 0, done: 0, ended: 0 };
+  all.forEach(x => { if (x.i.status === 'active' || x.i.status === 'notyet') counts.active++; else counts[x.i.status]++; });
+  const f = UI.instFilter;
+  const list = all.filter(x => f === 'all' || (f === 'active' ? ['active', 'notyet'].includes(x.i.status) : x.i.status === f))
+    .sort((a, b) => (b.i.left - a.i.left) || b.p.first_month.localeCompare(a.p.first_month));
+  const act = all.filter(x => x.i.status === 'active');
+  const segBtn = (v, l) => `<button class="${f === v ? 'on' : ''}" data-action="instFilter" data-v="${v}">${l}</button>`;
+  return `
+    <div class="seg" style="margin-top:6px">${segBtn('active', `Ongoing (${counts.active})`)}${segBtn('done', `Done (${counts.done})`)}${segBtn('ended', `Ended early (${counts.ended})`)}${segBtn('all', 'All')}</div>
+    <div class="tiles" style="margin-top:10px">
+      <div class="tile"><div class="lbl">Left to pay (ongoing)</div><div class="val">${peso(sum(act, x => x.i.remaining))}</div></div>
+      <div class="tile"><div class="lbl">Monthly (ongoing)</div><div class="val">${peso(sum(act, x => x.i.monthly))}</div></div>
+    </div>
+    <div class="small muted" style="margin:8px 2px">Counted as of the ${monthLabel(asOf)} statement. Change the month at the top.</div>
+    ${list.map(({ p, i }) => planCard(p, i)).join('') || '<div class="card empty">No installments here.</div>'}
+    <button class="btn pri block" style="margin-top:12px" data-action="newPlan">+ New installment</button>`;
+}
+function planCard(p, i) {
+  const shares = IX.sharesByInst.get(p.id) || [];
+  const pill = { active: '<span class="pill amber">Ongoing</span>', notyet: '<span class="pill">Not started</span>', done: '<span class="pill green">Done</span>', ended: '<span class="pill">Ended early</span>' }[i.status];
+  const pctDone = Math.round(100 * (i.status === 'ended' ? 1 : i.billed / p.months));
+  return `<div class="card">
+    <div class="row top"><div class="grow"><div class="b">${esc(p.item)}</div>
+      <div class="small muted">${esc(cardLabel(p.card_id))} · ${monthLabel(p.first_month)} → ${monthLabel(i.last)}</div></div>
+      <div class="right"><div class="b">${peso(i.monthly)}<span class="small muted">/mo</span></div>${pill}</div></div>
+    <div class="bar"><i style="width:${pctDone}%"></i></div>
+    <div class="small">${i.status === 'ended' ? 'Ended early' : `<b>${i.billed} of ${p.months}</b> months · <b>${i.left} left</b> · ${peso(i.remaining)} to go`}</div>
+    <div class="small" style="margin-top:6px">${p.reason ? `<span class="muted">Why:</span> ${esc(p.reason)}` : `<button class="linkish" data-action="openPlan" data-id="${p.id}">+ Add why you got this</button>`}</div>
+    <details><summary>Details</summary>
+      <div class="kv">
+        <span class="k">Original amount</span><span>${i.orig == null ? '—' : peso(i.orig)}</span>
+        <span class="k">Total to pay (${p.months} × ${peso(i.monthly)})</span><span>${peso(i.total)}</span>
+        <span class="k">Interest</span><span>${i.interest == null ? '— add original amount' : peso(i.interest) + (i.pct != null ? ` (${(i.pct * 100).toFixed(1)}%)` : '')}</span>
+        <span class="k">Interest per month</span><span>${i.perMonth == null ? '—' : peso(i.perMonth)}</span>
+        <span class="k">Interest paid so far</span><span>${i.perMonth == null ? '—' : peso(i.perMonth * i.billed)}</span>
+        <span class="k">Who pays each month</span><span>${shares.map(s => `${esc(personName(s.person_id))} ${peso(s.monthly_share)}`).join('<br>') || 'Me'}</span>
+        <span class="k">Others still owe on this</span><span class="${i.owed > 0.004 ? 'over' : ''}">${peso(i.owed)}</span>
+        ${p.notes ? `<span class="k">Notes</span><span class="small">${esc(p.notes)}</span>` : ''}
+      </div>
+      <div class="row" style="margin-top:10px;gap:8px"><button class="btn sm" data-action="openPlan" data-id="${p.id}">Edit</button><button class="btn sm" data-action="planTx" data-id="${p.id}">See months</button></div>
+    </details></div>`;
+}
+function openPlan(id) {
+  const p = id ? IX.inst.get(id) : null;
+  const card = S.cards.find(c => c.active) || S.cards[0];
+  const d = p ? { ...p, original_amount: p.original_amount ?? '', monthly_amount: String(p.monthly_amount), months: String(p.months), reason: p.reason || '', notes: p.notes || '', ended_month: p.ended_month || '' }
+              : { id: null, item: '', reason: '', card_id: card?.id, original_amount: '', monthly_amount: '', months: '12', first_month: UI.month, status: 'active', ended_month: '', notes: '' };
+  d.shares = p ? (IX.sharesByInst.get(p.id) || []).map(s => ({ id: s.id, person_id: s.person_id, amount: String(s.monthly_share) }))
+               : [{ id: null, person_id: IX.me, amount: '' }];
+  const sheet = { title: p ? 'Installment' : 'New installment', draft: d, body: () => planBody(d), mount: o => bindPlan(o, d),
+    foot: () => `${d.id ? `<button class="btn danger" data-action="delPlan">Delete</button>` : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="savePlan">Save</button></div>` };
+  openSheet(sheet);
+}
+function planPreview(d) {
+  const m = num(d.monthly_amount) || 0, n = num(d.months) || 0, o = num(d.original_amount);
+  const total = r2(m * n), it = o == null ? null : r2(total - o);
+  return `Total to pay <b>${peso(total)}</b>${it == null ? '' : ` · Interest <b>${peso(it)}</b> (${o ? (it / o * 100).toFixed(1) : 0}%) · ${peso(n ? it / n : 0)}/month`}`;
+}
+function planBody(d) {
+  const people = S.people.filter(p => p.active || d.shares.some(s => s.person_id === p.id));
+  const sh = sum(d.shares, s => num(s.amount));
+  return `
+    <label class="f"><span>Item</span><input class="in" data-k="item" value="${esc(d.item)}" placeholder="e.g. iPhone 16 at SM"></label>
+    <label class="f"><span>Why / reason</span><textarea class="in" data-k="reason" rows="2" placeholder="e.g. Mami Pilar's ref, she pays monthly">${esc(d.reason)}</textarea></label>
+    <div class="grid2">
+      <label class="f"><span>Card</span><select class="in" data-k="card_id" data-num>${S.cards.map(c => `<option value="${c.id}" ${c.id === d.card_id ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}</select></label>
+      <label class="f"><span>First statement month</span><input class="in" type="month" data-k="first_month" data-month value="${d.first_month.slice(0, 7)}"></label>
+      <label class="f"><span>Original amount (₱)</span><input class="in" type="number" step="0.01" data-k="original_amount" value="${esc(d.original_amount)}"></label>
+      <label class="f"><span>Monthly (₱)</span><input class="in" type="number" step="0.01" data-k="monthly_amount" value="${esc(d.monthly_amount)}"></label>
+      <label class="f"><span>Number of months</span><input class="in" type="number" step="1" min="1" data-k="months" value="${esc(d.months)}"></label>
+      <label class="f"><span>Status</span><select class="in" data-k="status"><option value="active" ${d.status === 'active' ? 'selected' : ''}>Ongoing / normal</option><option value="ended_early" ${d.status === 'ended_early' ? 'selected' : ''}>Ended early (paid off)</option></select></label>
+    </div>
+    <div class="small" id="pprev" style="margin:4px 2px">${planPreview(d)}</div>
+    <div class="row" style="margin-top:14px"><div class="grow b">Who pays each month</div><button class="btn sm" data-action="planSplitEq">Split equally</button><button class="btn sm" data-action="addShare">+ Person</button></div>
+    <div class="small muted" id="shsum" style="margin:4px 2px">Shares ${peso(sh)} of ${peso(num(d.monthly_amount))}. Any amount not assigned goes to Me.</div>
+    ${d.shares.map((s, i) => `<div class="charge"><div class="top">
+      <select class="in" data-si="${i}" data-sk="person_id">${people.map(p => `<option value="${p.id}" ${p.id === s.person_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>
+      <input class="in" type="number" step="0.01" data-si="${i}" data-sk="amount" value="${esc(s.amount)}" placeholder="₱ / month">
+      <button class="iconbtn" data-action="rmShare" data-i="${i}" aria-label="Remove">✕</button></div></div>`).join('')}
+    <label class="f"><span>Notes</span><textarea class="in" data-k="notes" rows="2">${esc(d.notes)}</textarea></label>
+    <p class="small muted">New months are added by the app each month until the last month. Changing the split only affects months not created yet.</p>`;
+}
+function bindPlan(o, d) {
+  const upd8 = () => { o.querySelector('#pprev').innerHTML = planPreview(d); o.querySelector('#shsum').textContent = `Shares ${peso(sum(d.shares, s => num(s.amount)))} of ${peso(num(d.monthly_amount))}. Any amount not assigned goes to Me.`; };
+  o.querySelectorAll('[data-k]').forEach(el => el.addEventListener('input', () => {
+    let v = el.value; if (el.hasAttribute('data-num')) v = Number(v); if (el.hasAttribute('data-month')) v = v ? v + '-01' : d[el.dataset.k];
+    d[el.dataset.k] = v; upd8();
+  }));
+  o.querySelectorAll('[data-si]').forEach(el => el.addEventListener('input', () => { const s = d.shares[+el.dataset.si]; s[el.dataset.sk] = el.dataset.sk === 'person_id' ? Number(el.value) : el.value; upd8(); }));
+}
+async function savePlan() {
+  const d = SHEETS[SHEETS.length - 1].draft;
+  const row = { item: d.item.trim(), reason: d.reason.trim() || null, card_id: d.card_id, original_amount: num(d.original_amount) == null ? null : r2(num(d.original_amount)),
+                monthly_amount: r2(num(d.monthly_amount)), months: parseInt(d.months, 10), first_month: d.first_month, status: d.status,
+                ended_month: d.status === 'ended_early' ? (d.ended_month || UI.month) : null, notes: d.notes.trim() || null };
+  if (!row.item) return toast('Add the item name');
+  if (!(row.monthly_amount > 0)) return toast('Add the monthly amount');
+  if (!(row.months > 0)) return toast('Add the number of months');
+  const shares = d.shares.map(s => ({ ...s, amount: r2(num(s.amount)) })).filter(s => s.person_id);
+  if (new Set(shares.map(s => s.person_id)).size !== shares.length) return toast('Same person is listed twice');
+  try {
+    let pid = d.id;
+    if (pid) await upd('installments', pid, row); else { const [p] = await ins('installments', [row]); pid = p.id; }
+    const old = IX.sharesByInst.get(pid) || [];
+    const keep = new Set(shares.filter(s => s.id).map(s => s.id));
+    for (const o of old.filter(o => !keep.has(o.id))) await del('installment_shares', o.id);
+    for (const s of shares.filter(s => s.id)) { const o = old.find(x => x.id === s.id); if (o && (o.person_id !== s.person_id || Number(o.monthly_share) !== s.amount)) await upd('installment_shares', s.id, { person_id: s.person_id, monthly_share: s.amount }); }
+    const fresh = shares.filter(s => !s.id).map(s => ({ installment_id: pid, person_id: s.person_id, monthly_share: s.amount }));
+    if (fresh.length) await ins('installment_shares', fresh);
+    const made = await ensureInstallmentMonths();
+    closeSheet(); render(); toast(made ? `Saved · ${made} month${made === 1 ? '' : 's'} added` : 'Saved');
+  } catch (e) { console.error(e); toast('Could not save: ' + (e.message || e)); }
+}
+
+/* ---------------- PEOPLE ---------------- */
+function personStats(pid) {
+  const cs = IX.chargesByPerson.get(pid) || [];
+  const open = cs.filter(c => balance(c) > 0.004);
+  return { bal: sum(cs, balance), open: open.length, oldest: open.map(c => IX.tx.get(c.transaction_id)?.month).sort()[0] };
+}
+function viewPeople() {
+  const ppl = S.people.filter(p => p.kind !== 'me').map(p => ({ p, s: personStats(p.id) }))
+    .sort((a, b) => (b.s.bal - a.s.bal) || a.p.name.localeCompare(b.p.name));
+  const owing = ppl.filter(x => x.s.bal > 0.004), clear = ppl.filter(x => x.s.bal <= 0.004);
+  const item = ({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow"><div class="b">${esc(p.name)} ${p.kind !== 'person' ? `<span class="pill">${p.kind}</span>` : ''}</div>
+    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
+  return `
+    <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div></div><button class="btn sm" data-action="newPerson">+ Person</button></div>
+    <div class="sec">Still owe you</div><div class="card list">${owing.map(item).join('') || '<div class="empty">Nobody owes you 🎉</div>'}</div>
+    <div class="sec">All paid</div><div class="card list">${clear.map(item).join('') || '<div class="empty">—</div>'}</div>`;
+}
+function openPerson(pid) {
+  const p = IX.person.get(pid);
+  const d = { name: p.name, kind: p.kind, active: p.active, pay: '', pay_on: todayISO(), pay_note: '' };
+  const sheet = { title: p.name, draft: d, body: () => personBody(p, d), mount: o => {
+      bindDraft(o, d);
+      const pv = () => { const el = o.querySelector('#alloc'); if (el) el.innerHTML = allocPreview(pid, num(d.pay)); };
+      o.querySelector('[data-k=pay]')?.addEventListener('input', pv);
+    },
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Close</button><button class="btn pri" data-action="savePerson" data-id="${pid}">Save name</button></div>` };
+  openSheet(sheet);
+}
+function openCharges(pid) {
+  return (IX.chargesByPerson.get(pid) || []).filter(c => balance(c) > 0.004)
+    .map(c => ({ c, t: IX.tx.get(c.transaction_id) }))
+    .sort((a, b) => a.t.month.localeCompare(b.t.month) || (a.t.txn_date || '').localeCompare(b.t.txn_date || '') || a.c.id - b.c.id);
+}
+function allocate(pid, amount) {
+  let left = r2(amount); const out = [];
+  for (const { c, t } of openCharges(pid)) { if (left <= 0.004) break; const take = r2(Math.min(left, balance(c))); out.push({ c, t, take }); left = r2(left - take); }
+  return { out, left };
+}
+function allocPreview(pid, amount) {
+  if (!amount || amount <= 0) return '';
+  const { out, left } = allocate(pid, amount);
+  return `<div class="small" style="margin-top:6px">This will pay, oldest first:<br>${out.map(x => `• ${monthLabel(x.t.month)} ${esc(x.t.description)} — ${peso(x.take)}${x.take < balance(x.c) - 0.004 ? ' (part)' : ''}`).join('<br>')}${left > 0.004 ? `<br><span class="over">${peso(left)} is more than they owe and will not be saved.</span>` : ''}</div>`;
+}
+function personBody(p, d) {
+  const items = openCharges(p.id);
+  const pays = (IX.chargesByPerson.get(p.id) || []).flatMap(c => (IX.collByCharge.get(c.id) || []).map(x => ({ x, t: IX.tx.get(c.transaction_id) })))
+    .sort((a, b) => b.x.received_on.localeCompare(a.x.received_on) || b.x.id - a.x.id).slice(0, 15);
+  const s = personStats(p.id);
+  return `
+    <div class="card"><div class="small muted">Still owes you</div><div class="big ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>
+    ${p.kind !== 'me' ? `<div class="card"><div class="b">Record a payment</div>
+      <div class="grid2"><label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="pay" value="${esc(d.pay)}"></label>
+      <label class="f"><span>Date</span><input class="in" type="date" data-k="pay_on" value="${d.pay_on}"></label></div>
+      <input class="in" data-k="pay_note" placeholder="Note (optional)" value="${esc(d.pay_note)}">
+      <div id="alloc">${allocPreview(p.id, num(d.pay))}</div>
+      <button class="btn pri block" style="margin-top:10px" data-action="personPay" data-id="${p.id}">Save payment</button></div>` : ''}
+    <div class="sec">Unpaid items (${items.length})</div>
+    <div class="card list">${items.map(({ c, t }) => { const st = chargeStatus(c); return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
+      <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}${c.promise_date ? ` · promised ${dateLabel(c.promise_date)}` : ''}</div></div>
+      <div class="right"><div class="b">${peso(balance(c))}</div><span class="chip ${st}">${STATUS_LABEL[st]}</span></div></div>`; }).join('') || '<div class="empty">Nothing unpaid 🎉</div>'}</div>
+    <div class="sec">Recent payments</div>
+    <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
+    <div class="sec">Edit</div>
+    <div class="card"><div class="grid2"><label class="f"><span>Name</span><input class="in" data-k="name" value="${esc(d.name)}"></label>
+      <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket', 'me'].map(k => `<option ${k === d.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div></div>`;
+}
+
+/* ---------------- cards (menu) ---------------- */
+function openCards() {
+  openSheet({ title: 'Cards', body: () => `<div class="card list">${S.cards.map(c => `<div class="item" data-action="openCard" data-id="${c.id}"><div class="grow"><div class="b">${esc(c.code)} ${c.active ? '' : '<span class="pill">not used</span>'}</div><div class="small muted">${esc(c.bank || '')}${c.last4 ? ' ••' + c.last4 : ''} · due day ${c.due_day ?? '—'}</div></div><div class="muted">›</div></div>`).join('') || '<div class="empty">No cards yet</div>'}</div>
+    <button class="btn pri block" data-action="openCard">+ Add card</button>` });
+}
+function openCard(id) {
+  const c = id ? IX.card.get(id) : null;
+  const d = c ? { ...c, last4: c.last4 || '', due_day: c.due_day ?? '', cutoff_day: c.cutoff_day ?? '', bank: c.bank || '' } : { id: null, code: '', bank: '', last4: '', due_day: '', cutoff_day: '', active: true };
+  openSheet({ title: c ? c.code : 'New card', draft: d,
+    body: () => `<label class="f"><span>Short code (shows on lists)</span><input class="in" data-k="code" value="${esc(d.code)}" placeholder="e.g. RCBCBLCK"></label>
+      <label class="f"><span>Bank / card name</span><input class="in" data-k="bank" value="${esc(d.bank)}" placeholder="e.g. RCBC Black"></label>
+      <div class="grid2"><label class="f"><span>Last 4 digits only</span><input class="in" data-k="last4" inputmode="numeric" maxlength="4" value="${esc(d.last4)}"></label>
+      <label class="f"><span>Usual due day (1–31)</span><input class="in" type="number" min="1" max="31" data-k="due_day" value="${esc(d.due_day)}"></label>
+      <label class="f"><span>Statement cut-off day</span><input class="in" type="number" min="1" max="31" data-k="cutoff_day" value="${esc(d.cutoff_day)}"></label>
+      <label class="f"><span>Still using?</span><select class="in" data-k="active"><option value="true" ${d.active ? 'selected' : ''}>Yes</option><option value="false" ${!d.active ? 'selected' : ''}>No</option></select></label></div>`,
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveCard">Save</button></div>`,
+    mount: o => bindDraft(o, d) });
+}
+
+/* ---------------- statement PDF upload ---------------- */
+const PDFJS_BASE = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/';
+async function loadPdfjs() {
+  if (window._pdfjs) return window._pdfjs;
+  const pdfjs = await import(PDFJS_BASE + 'pdf.min.mjs');
+  pdfjs.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.mjs';
+  return (window._pdfjs = pdfjs);
+}
+async function pdfPages(buf, password) {
+  const pdfjs = await loadPdfjs();
+  const doc = await pdfjs.getDocument({ data: buf, password: password || undefined }).promise;
+  const pages = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const tc = await (await doc.getPage(i)).getTextContent();
+    pages.push(tc.items.filter(it => it.str && it.str.trim()).map(it => ({ s: it.str.replace(/\s+$/, ''), x: it.transform[4], y: it.transform[5], w: it.width })));
+  }
+  return pages;
+}
+// Group text pieces into lines (same height) and cells (pieces separated by a wide gap).
+function pageLines(items, maxX = Infinity) {
+  const its = items.filter(i => i.x < maxX).sort((a, b) => b.y - a.y || a.x - b.x);
+  const lines = [];
+  for (const it of its) {
+    const L = lines[lines.length - 1];
+    if (L && Math.abs(L.y - it.y) <= 2.5) L.items.push(it); else lines.push({ y: it.y, items: [it] });
+  }
+  return lines.map(l => {
+    l.items.sort((a, b) => a.x - b.x);
+    const cells = []; let cur = null, end = null;
+    for (const it of l.items) {
+      const gap = end == null ? 0 : it.x - end;
+      if (!cur || gap > 12) { cur = { x: it.x, text: it.s.trim() }; cells.push(cur); }
+      else cur.text += (gap > 1 ? ' ' : '') + it.s.trim();
+      end = it.x + it.w;
+    }
+    return { y: l.y, cells, text: cells.map(c => c.text).join('   ') };
+  });
+}
+const MON_RE = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC';
+function parseDateAny(s) {
+  let m = new RegExp(`\\b(${MON_RE})[A-Z]*\\.?\\s+(\\d{1,2}),?\\s+(\\d{4})\\b`, 'i').exec(s);
+  if (m) return `${m[3]}-${pad(MON_RE.split('|').indexOf(m[1].toUpperCase().slice(0, 3)) + 1)}-${pad(m[2])}`;
+  m = /\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/.exec(s);
+  if (m) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return `${y}-${pad(m[1])}-${pad(m[2])}`; }
+  return null;
+}
+const parseMoney = s => { const m = /(?:P|PHP|₱)?\s*([\d,]+\.\d{2})/.exec(s || ''); return m ? Number(m[1].replace(/,/g, '')) : null; };
+// Find the value written next to or under a label (e.g. "PAYMENT DUE DATE" → "OCT 16 2026").
+function findLabeled(lines, labelRe, parse) {
+  for (let i = 0; i < lines.length; i++) {
+    for (const cell of lines[i].cells) {
+      const m = labelRe.exec(cell.text); if (!m) continue;
+      const after = parse(cell.text.slice(m.index + m[0].length)); if (after != null) return after;
+      const right = lines[i].cells.find(c => c.x > cell.x && c.x - cell.x < 260 && parse(c.text) != null && !labelRe.test(c.text));
+      if (right && right.x - cell.x < 200) return parse(right.text);
+      for (let j = i + 1; j < Math.min(lines.length, i + 4); j++) {
+        if (lines[i].y - lines[j].y > 45) break;
+        const below = lines[j].cells.filter(c => Math.abs(c.x - cell.x) < 70 && parse(c.text) != null).sort((a, b) => Math.abs(a.x - cell.x) - Math.abs(b.x - cell.x))[0];
+        if (below) return parse(below.text);
+      }
+    }
+  }
+  return null;
+}
+const TX_RE = /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(?:(\d{1,2}\/\d{1,2}\/\d{2,4})\s+)?(.+?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s*(-|CR)?$/i;
+const CARDNO_RE = /(?:\d{4}|[X*]{4})[- ]?(?:\d{4}|[X*]{4})[- ]?(?:\d{4}|[X*]{4})[- ]?(\d{4})\b/;
+function parseStatement(pages) {
+  const all = pages.map(p => pageLines(p));
+  const flat = all.flat();
+  const full = flat.map(l => l.text).join('\n');
+  const info = {
+    bank: /RCBC/i.test(full) ? 'RCBC' : /UNIONBANK|UNION BANK/i.test(full) ? 'UnionBank' : '',
+    due: findLabeled(flat, /PAYMENT\s+DUE\s+DATE|DUE\s+DATE/i, parseDateAny),
+    total: findLabeled(flat, /TOTAL\s+(?:BALANCE|AMOUNT)\s+DUE|NEW\s+BALANCE|TOTAL\s+STATEMENT\s+BALANCE/i, parseMoney),
+    min: findLabeled(flat, /MIN(?:IMUM)?\.?\s+(?:AMOUNT|PAYMENT)\s+DUE/i, parseMoney),
+    last4: (CARDNO_RE.exec(full) || [])[1] || null,
+  };
+  const lines = []; let last4 = info.last4;
+  pages.forEach(items => {
+    // Skip the right-hand "IMPORTANT REMINDERS" column so it doesn't mix into transaction rows.
+    const header = pageLines(items).flatMap(l => l.cells).find(c => /IMPORTANT\s+REMINDERS/i.test(c.text));
+    for (const l of pageLines(items, header ? header.x - 4 : Infinity)) {
+      const t = l.text.trim(); const m = TX_RE.exec(t);
+      if (!m) { const c = CARDNO_RE.exec(t); if (c) last4 = c[1]; continue; }
+      let desc = m[3].replace(/\s{2,}/g, ' ').trim(), k = null, n = null;
+      const im = /(?:^|\s)(\d{1,2})\s*\/\s*(\d{1,2})$/.exec(desc);
+      if (im && +im[1] >= 1 && +im[1] <= +im[2] && +im[2] <= 60) { k = +im[1]; n = +im[2]; desc = desc.slice(0, im.index).trim(); }
+      const neg = /^\(|^-/.test(m[4]) || !!m[5];
+      const amount = r2((neg ? -1 : 1) * Number(m[4].replace(/[(),\-]/g, '')));
+      lines.push({ date: parseDateAny(m[1]), post: m[2] ? parseDateAny(m[2]) : null, desc, k, n, amount, last4 });
+    }
+  });
+  return { info, lines, rawText: full };
+}
+const normDesc = s => (s || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+// Decide what to do with each line: new, duplicate, payment, or an installment month.
+function planImport(st) {
+  const L = st.lines, m = st.month, cardId = st.card_id;
+  const existing = S.transactions.filter(t => t.card_id === cardId && t.month === m);
+  const used = new Set();
+  for (const x of L) {
+    x.cardId = (x.last4 && S.cards.find(c => c.last4 === x.last4)?.id) || cardId;
+    x.person = x.amount < 0 ? IX.me : (st.defaultPerson || IX.me);
+    x.kind = 'new'; x.on = true; x.plan = null; x.planNo = null; x.matchTx = null; x.makePlan = false;
+    if (x.amount < 0 && /PAYMENT/i.test(x.desc)) { x.kind = 'payment'; x.on = false; continue; }
+    const plans = S.installments.filter(p => p.card_id === x.cardId && p.status === 'active' && Math.abs(Number(p.monthly_amount) - x.amount) <= 0.05 && (x.n == null || p.months === x.n));
+    const fit = plans.find(p => { const no = x.k ?? monthDiff(m, p.first_month) + 1; return no >= 1 && no <= p.months; });
+    if (fit && (x.k != null || plans.length === 1)) {
+      x.plan = fit; x.planNo = x.k ?? monthDiff(m, fit.first_month) + 1;
+      x.matchTx = (IX.txByInst.get(fit.id) || []).find(t => t.installment_no === x.planNo) || null;
+      x.kind = x.matchTx && x.matchTx.source !== 'auto' ? 'dup' : 'inst'; x.on = x.kind !== 'dup'; continue;
+    }
+    const dup = existing.find(t => !used.has(t.id) && Math.abs(Number(t.amount) - x.amount) < 0.005 && (t.txn_date === x.date || normDesc(t.description) === normDesc(x.desc)));
+    if (dup) { used.add(dup.id); x.kind = 'dup'; x.on = false; x.matchTx = dup; continue; }
+    if (x.k != null) { x.kind = 'newplan'; x.makePlan = true; }
+  }
+}
+function maskCards(s) { return s.replace(/\b\d{4}([- ]?)\d{4}\1\d{4}\1(\d{4})\b/g, 'XXXX-XXXX-XXXX-$2'); }
+
+function openUpload() {
+  const d = { step: 'pick', file: null, password: '', err: '', st: null };
+  const sheet = { title: 'Upload statement PDF', draft: d, body: () => uploadBody(d), foot: () => uploadFoot(d), mount: o => mountUpload(o, d) };
+  openSheet(sheet);
+}
+function uploadFoot(d) {
+  if (d.step === 'review') { const n = d.st.lines.filter(x => x.on).length; return `<button class="btn" data-action="upBack">Back</button><div class="grow"><button class="btn pri" data-action="upImport" ${n ? '' : 'disabled'}>Import ${n} line${n === 1 ? '' : 's'}</button></div>`; }
+  return `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="upRead">Read PDF</button></div>`;
+}
+function uploadBody(d) {
+  if (d.step === 'pick') return `
+    <p class="small muted">Pick the e-statement PDF from your bank. It is read on your phone/computer only — the file is not uploaded anywhere.</p>
+    <label class="f"><span>Statement PDF</span><input class="in" type="file" accept="application/pdf,.pdf" id="upfile"></label>
+    <label class="f"><span>PDF password (if it asks for one — not saved)</span><input class="in" type="password" data-k="password" value="${esc(d.password)}" autocomplete="off"></label>
+    ${d.err ? `<div class="err">${esc(d.err)}</div>` : ''}
+    ${d.raw ? `<button class="btn block" style="margin-top:10px" data-action="upCopyText">Copy the PDF text for Claude (card numbers hidden)</button>` : ''}`;
+  const st = d.st, people = S.people.filter(p => p.active);
+  const opts = sel => people.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+  const tag = x => ({ new: '', payment: '<span class="pill">Payment to bank — skipped</span>', dup: '<span class="pill">Already in app</span>',
+    inst: `<span class="pill amber">Installment ${x.planNo}/${x.plan?.months} → ${esc(x.plan?.item || '')}${x.matchTx ? ' (fills the month already listed)' : ''}</span>`,
+    newplan: `<span class="pill amber">Installment ${x.k}/${x.n} — new</span>` })[x.kind];
+  const on = st.lines.filter(x => x.on);
+  return `
+    <div class="card small">${st.info.bank ? `<b>${esc(st.info.bank)}</b> statement` : 'Statement'}${st.info.last4 ? ` · card ••${esc(st.info.last4)}` : ''} · ${st.lines.length} lines found</div>
+    <div class="grid2">
+      <label class="f"><span>Card</span><select class="in" data-k="card_id" data-num data-re>${S.cards.map(c => `<option value="${c.id}" ${c.id === st.card_id ? 'selected' : ''}>${esc(c.code)}${c.last4 ? ' ••' + c.last4 : ''}</option>`).join('')}</select></label>
+      <label class="f"><span>Statement month</span><input class="in" type="month" data-k="month" data-month data-re value="${st.month.slice(0, 7)}"></label>
+      <label class="f"><span>Due date</span><input class="in" type="date" data-k="due" value="${esc(st.info.due || '')}"></label>
+      <label class="f"><span>Total due (₱)</span><input class="in" type="number" step="0.01" data-k="total" value="${st.info.total ?? ''}"></label>
+      <label class="f"><span>Minimum due (₱)</span><input class="in" type="number" step="0.01" data-k="min" value="${st.info.min ?? ''}"></label>
+      <label class="f"><span>Set everyone ticked to</span><select class="in" id="setall"><option value="">—</option>${opts(null)}</select></label>
+    </div>
+    <div class="sumline">Ticked: ${on.length} · ${peso(sum(on, x => x.amount))}${st.info.total != null ? ` · bill total ${peso(st.info.total)}` : ''}</div>
+    <div class="card list">${st.lines.map((x, i) => `
+      <div class="item" style="cursor:default;flex-direction:column;gap:6px">
+        <div class="row" style="width:100%"><input type="checkbox" data-li="${i}" data-lk="on" ${x.on ? 'checked' : ''} style="width:20px;height:20px">
+          <div class="grow"><div class="b ell">${esc(x.desc)}</div><div class="small muted">${x.date ? dateLabel(x.date) : ''}</div></div>
+          <div class="b">${peso(x.amount)}</div></div>
+        <div class="row" style="width:100%">${x.kind === 'new' || x.kind === 'newplan' ? `<select class="in" data-li="${i}" data-lk="person" style="max-width:190px;min-height:36px;padding:6px 8px">${opts(x.person)}</select>` : ''}
+          <div class="grow small">${tag(x)}${x.kind === 'newplan' ? `<label class="small" style="display:block;margin-top:4px"><input type="checkbox" data-li="${i}" data-lk="makePlan" ${x.makePlan ? 'checked' : ''}> Also create this installment plan</label>` : ''}</div></div>
+      </div>`).join('') || '<div class="empty">No transaction lines found.</div>'}</div>
+    <p class="small muted">After importing, open any transaction to split it between people.</p>`;
+}
+function mountUpload(o, d) {
+  bindDraft(o, d);
+  const f = o.querySelector('#upfile'); if (f) f.addEventListener('change', () => { d.file = f.files[0] || null; d.err = ''; });
+  if (d.step !== 'review') return;
+  const st = d.st;
+  o.querySelectorAll('[data-re]').forEach(el => el.addEventListener('change', () => { st[el.dataset.k] = d[el.dataset.k]; planImport(st); redrawTop(); }));
+  o.querySelectorAll('[data-k=due],[data-k=total],[data-k=min]').forEach(el => el.addEventListener('input', () => { st.info[el.dataset.k] = el.dataset.k === 'due' ? el.value : num(el.value); }));
+  o.querySelectorAll('[data-li]').forEach(el => el.addEventListener('change', () => {
+    const x = st.lines[+el.dataset.li], k = el.dataset.lk;
+    x[k] = el.type === 'checkbox' ? el.checked : Number(el.value); if (k === 'on') redrawTop();
+  }));
+  o.querySelector('#setall')?.addEventListener('change', e => { const v = Number(e.target.value); if (!v) return; st.lines.forEach(x => { if (x.on && (x.kind === 'new' || x.kind === 'newplan')) x.person = v; }); redrawTop(); });
+}
+async function readUpload() {
+  const top = SHEETS[SHEETS.length - 1], d = top.draft;
+  if (!d.file) { d.err = 'Choose the PDF first.'; return redrawTop(); }
+  d.err = 'Reading…'; redrawTop();
+  let pages;
+  try { pages = await pdfPages(await d.file.arrayBuffer(), d.password); }
+  catch (e) {
+    d.err = e?.name === 'PasswordException' ? (d.password ? 'Wrong password — try again.' : 'This PDF has a password. Type it above, then tap Read PDF.') : 'Could not open this PDF: ' + (e.message || e);
+    return redrawTop();
+  }
+  const st = parseStatement(pages);
+  d.raw = maskCards(st.rawText);
+  if (!st.lines.length) { d.err = 'No transactions found. Is this a scanned/photo PDF? Tap the button below and send me the text so I can add this bank.'; return redrawTop(); }
+  const byLast4 = st.info.last4 && S.cards.find(c => c.last4 === st.info.last4);
+  const byBank = st.info.bank && S.cards.find(c => c.active && (c.code + ' ' + (c.bank || '')).toUpperCase().includes(st.info.bank.toUpperCase()));
+  st.card_id = (byLast4 || byBank || S.cards.find(c => c.active) || S.cards[0])?.id;
+  const posts = st.lines.map(x => x.post || x.date).filter(Boolean).sort();
+  st.month = st.info.due ? addMonths(monthOf(st.info.due), -1) : monthOf(posts[posts.length - 1] || todayISO());
+  d.card_id = st.card_id; d.month = st.month; d.due = st.info.due; d.total = st.info.total; d.min = st.info.min;
+  planImport(st); d.st = st; d.step = 'review'; d.err = '';
+  top.title = 'Check before importing'; drawSheets();
+}
+async function doImport() {
+  const st = SHEETS[SHEETS.length - 1].draft.st, m = st.month;
+  const pick = st.lines.filter(x => x.on);
+  if (!pick.length) return;
+  try {
+    // 1) statement: due date / totals
+    const s = IX.stmt.get(st.card_id + '|' + m);
+    const srow = { due_date: st.info.due || null, total_due: st.info.total ?? null, min_due: st.info.min ?? null };
+    if (s) await upd('statements', s.id, srow); else await ins('statements', [{ ...srow, card_id: st.card_id, month: m }]);
+    // 2) new installment plans
+    for (const x of pick.filter(x => x.kind === 'newplan' && x.makePlan)) {
+      const [p] = await ins('installments', [{ card_id: x.cardId, item: x.desc, monthly_amount: x.amount, months: x.n, first_month: addMonths(m, -(x.k - 1)), status: 'active', notes: 'Created from PDF upload' }]);
+      await ins('installment_shares', [{ installment_id: p.id, person_id: x.person, monthly_share: x.amount }]);
+      x.plan = p; x.planNo = x.k; x.kind = 'inst';
+    }
+    // 3) installment months already listed by the app → mark as confirmed by the PDF
+    for (const x of pick.filter(x => x.kind === 'inst' && x.matchTx)) await upd('transactions', x.matchTx.id, { txn_date: x.date, source: 'pdf' });
+    // 4) everything else → new transactions + who pays
+    const fresh = pick.filter(x => !(x.kind === 'inst' && x.matchTx));
+    if (fresh.length) {
+      const txs = await ins('transactions', fresh.map(x => ({ card_id: x.cardId, month: m, txn_date: x.date, description: x.desc + (x.k && !x.plan ? ` ${x.k}/${x.n}` : ''),
+        category: x.plan ? 'LOAN' : null, amount: x.amount, installment_id: x.plan?.id ?? null, installment_no: x.plan ? x.planNo : null, source: 'pdf' })));
+      const rows = [];
+      txs.forEach((t, i) => { const x = fresh[i];
+        if (x.plan) for (const c of splitFromShares(x.plan)) rows.push({ ...c, transaction_id: t.id });
+        else rows.push({ transaction_id: t.id, person_id: x.person || IX.me, amount: x.amount }); });
+      await ins('charges', rows);
+    }
+    await ensureInstallmentMonths();
+    SHEETS.length = 0; drawSheets(); UI.month = m; UI.view = 'tx'; UI.f = { scope: 'month', card: String(st.card_id), person: '', status: '', q: '' };
+    render(); toast(`Imported ${pick.length} line${pick.length === 1 ? '' : 's'}`);
+  } catch (e) { console.error(e); toast('Import stopped: ' + (e.message || e)); }
+}
+
+/* ---------------- export ---------------- */
+function loadScript(src) { return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s); }); }
+async function exportBackup() {
+  const stamp = todayISO();
+  const flat = S.transactions.flatMap(t => (IX.chargesByTx.get(t.id) || []).map(c => ({
+    'Statement month': t.month.slice(0, 7), Card: cardCode(t.card_id), Date: t.txn_date || '', Description: t.description, Category: t.category || '',
+    'Installment': t.installment_no ? `${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : '', 'Line amount': Number(t.amount),
+    Person: personName(c.person_id), Share: Number(c.amount), Received: received(c), Balance: balance(c), Status: STATUS_LABEL[chargeStatus(c)],
+    'Promise date': c.promise_date || '', Note: c.note || '' })));
+  try {
+    if (!window.XLSX) await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(flat), 'Readable');
+    for (const t of TABLES) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(S[t]), t.slice(0, 31));
+    XLSX.writeFile(wb, `cardsplit-backup-${stamp}.xlsx`);
+  } catch (e) {
+    const blob = new Blob([JSON.stringify(S, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `cardsplit-backup-${stamp}.json`; a.click();
+    toast('Excel library did not load — saved a JSON backup instead');
+  }
+}
+
+/* ---------------- actions ---------------- */
+const A = {
+  go: el => { UI.view = el.dataset.view; render(); scrollTo(0, 0); },
+  prevMonth: () => { UI.month = addMonths(UI.month, -1); render(); },
+  nextMonth: () => { UI.month = addMonths(UI.month, 1); render(); },
+  closeSheet: () => { const s = SHEETS[SHEETS.length - 1]; if (s?.resolve) s.resolve(false); closeSheet(); },
+  askYes: () => { const s = SHEETS[SHEETS.length - 1]; closeSheet(); s.resolve(true); },
+  askNo: () => { const s = SHEETS[SHEETS.length - 1]; closeSheet(); s.resolve(false); },
+  newTx: () => openTx(null),
+  openTx: el => openTx(+el.dataset.id),
+  openStmt: el => openStmt(+el.dataset.card),
+  openPerson: el => openPerson(+el.dataset.id),
+  openPlan: el => openPlan(el.dataset.id ? +el.dataset.id : null),
+  newPlan: () => openPlan(null),
+  txScope: el => { UI.f.scope = el.dataset.v; render(); },
+  instFilter: el => { UI.instFilter = el.dataset.v; render(); },
+  filterCard: el => { SHEETS.length = 0; drawSheets(); UI.view = 'tx'; UI.f = { scope: 'month', card: el.dataset.card, person: '', status: '', q: '' }; render(); },
+  planTx: el => { const p = IX.inst.get(+el.dataset.id); UI.view = 'tx'; UI.f = { scope: 'all', card: '', person: '', status: '', q: p.item }; render(); },
+  addCharge: () => { const d = SHEETS[SHEETS.length - 1].draft; const used = new Set(d.charges.map(c => c.person_id));
+    const p = S.people.find(p => p.active && !used.has(p.id)); if (!p) return toast('Everyone is already listed');
+    const left = r2(num(d.amount) - sum(d.charges, c => num(c.amount))); d.charges.push({ id: null, person_id: p.id, amount: left > 0 ? String(left) : '', promise_date: '', note: '' }); redrawTop(); },
+  rmCharge: el => { const d = SHEETS[SHEETS.length - 1].draft; d.charges.splice(+el.dataset.i, 1); redrawTop(); },
+  splitEq: () => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); const n = d.charges.length; if (!amt || !n) return toast('Add the amount and people first');
+    const each = Math.floor(amt / n * 100) / 100; d.charges.forEach((c, i) => c.amount = String(i === 0 ? r2(amt - each * (n - 1)) : each)); redrawTop(); },
+  saveTx: () => saveTx(),
+  delTx: async () => { const d = SHEETS[SHEETS.length - 1].draft; if (!(await ask('Delete this transaction and its payments?', 'Delete', true))) return;
+    try { await del('transactions', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
+  addPay: el => openPay(+el.dataset.charge),
+  savePay: async el => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); if (!amt) return toast('Add the amount');
+    try { await ins('collections', [{ charge_id: +el.dataset.charge, amount: amt, received_on: d.received_on || todayISO(), note: (d.note || '').trim() || null }]); closeSheet(); redrawTop(); render(); toast('Payment saved'); }
+    catch (e) { toast('Could not save: ' + e.message); } },
+  rmPay: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; await del('collections', +el.dataset.id); redrawTop(); render(); },
+  markAllPaid: async () => { const d = SHEETS[SHEETS.length - 1].draft;
+    const rows = d.charges.filter(c => c.id).map(c => IX.charge.get(c.id)).filter(c => c && !isMe(c.person_id) && balance(c) > 0.004).map(c => ({ charge_id: c.id, amount: balance(c), received_on: todayISO(), note: 'Marked paid' }));
+    if (!rows.length) return; await ins('collections', rows); redrawTop(); render(); toast('Marked paid'); },
+  saveStmt: async el => { const d = SHEETS[SHEETS.length - 1].draft; const cardId = +el.dataset.card; const st = IX.stmt.get(cardId + '|' + UI.month);
+    const row = { due_date: d.due_date || null, total_due: num(d.total_due), min_due: num(d.min_due), paid_to_bank: !!d.paid_to_bank, paid_on: d.paid_on || null, note: (d.note || '').trim() || null };
+    try { if (st) await upd('statements', st.id, row); else await ins('statements', [{ ...row, card_id: cardId, month: UI.month }]); closeSheet(); render(); toast('Saved'); }
+    catch (e) { toast('Could not save: ' + e.message); } },
+  addShare: () => { const d = SHEETS[SHEETS.length - 1].draft; const used = new Set(d.shares.map(s => s.person_id)); const p = S.people.find(p => p.active && !used.has(p.id)); if (!p) return toast('Everyone is already listed'); d.shares.push({ id: null, person_id: p.id, amount: '' }); redrawTop(); },
+  rmShare: el => { const d = SHEETS[SHEETS.length - 1].draft; d.shares.splice(+el.dataset.i, 1); redrawTop(); },
+  planSplitEq: () => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.monthly_amount)); const n = d.shares.length; if (!amt || !n) return toast('Add the monthly amount and people first');
+    const each = Math.floor(amt / n * 100) / 100; d.shares.forEach((s, i) => s.amount = String(i === 0 ? r2(amt - each * (n - 1)) : each)); redrawTop(); },
+  savePlan: () => savePlan(),
+  delPlan: async () => { const d = SHEETS[SHEETS.length - 1].draft; const n = (IX.txByInst.get(d.id) || []).length;
+    if (!(await ask(`Delete this installment and its ${n} month row(s) with their payments?`, 'Delete', true))) return;
+    try { await del('installments', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
+  newPerson: () => { const d = { name: '', kind: 'person' };
+    openSheet({ title: 'New person', draft: d, mount: o => bindDraft(o, d),
+      body: () => `<label class="f"><span>Name</span><input class="in" data-k="name" placeholder="e.g. Tita Angie"></label>
+        <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket'].map(k => `<option>${k}</option>`).join('')}</select></label>`,
+      foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="addPerson">Add</button></div>` }); },
+  addPerson: async () => { const d = SHEETS[SHEETS.length - 1].draft; const name = d.name.trim(); if (!name) return toast('Add a name');
+    if (S.people.some(p => p.name.toLowerCase() === name.toLowerCase())) return toast('That name already exists');
+    try { await ins('people', [{ name, kind: d.kind }]); closeSheet(); render(); toast('Added'); } catch (e) { toast('Could not add: ' + e.message); } },
+  savePerson: async el => { const d = SHEETS[SHEETS.length - 1].draft; try { await upd('people', +el.dataset.id, { name: d.name.trim(), kind: d.kind }); SHEETS[SHEETS.length - 1].title = d.name.trim(); drawSheets(); render(); toast('Saved'); } catch (e) { toast('Could not save: ' + e.message); } },
+  personPay: async el => { const pid = +el.dataset.id; const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.pay)); if (!(amt > 0)) return toast('Add the amount');
+    const { out } = allocate(pid, amt); if (!out.length) return toast('Nothing unpaid for this person');
+    try { await ins('collections', out.map(x => ({ charge_id: x.c.id, amount: x.take, received_on: d.pay_on || todayISO(), note: (d.pay_note || '').trim() || null })));
+      d.pay = ''; d.pay_note = ''; redrawTop(); render(); toast(`Payment saved on ${out.length} item${out.length === 1 ? '' : 's'}`); } catch (e) { toast('Could not save: ' + e.message); } },
+  openCard: el => openCard(el.dataset.id ? +el.dataset.id : null),
+  saveCard: async () => { const d = SHEETS[SHEETS.length - 1].draft;
+    const row = { code: d.code.trim().toUpperCase(), bank: d.bank.trim() || null, last4: d.last4.trim() || null, due_day: num(d.due_day), cutoff_day: num(d.cutoff_day), active: String(d.active) === 'true' };
+    if (!row.code) return toast('Add a short code'); if (row.last4 && !/^\d{4}$/.test(row.last4)) return toast('Last 4 digits only');
+    try { if (d.id) await upd('cards', d.id, row); else await ins('cards', [row]); closeSheet(); redrawTop(); render(); toast('Saved'); } catch (e) { toast('Could not save: ' + e.message); } },
+  upload: () => openUpload(),
+  upRead: () => readUpload(),
+  upImport: () => doImport(),
+  upBack: () => { const t = SHEETS[SHEETS.length - 1]; t.draft.step = 'pick'; t.title = 'Upload statement PDF'; drawSheets(); },
+  upCopyText: async () => { const d = SHEETS[SHEETS.length - 1].draft; const txt = (d.raw || '').slice(0, 6000);
+    try { await navigator.clipboard.writeText(txt); toast('Copied — paste it to Claude'); }
+    catch { openSheet({ title: 'PDF text', body: () => `<textarea class="in" rows="16" readonly>${esc(txt)}</textarea>` }); } },
+  menu: () => {
+    const el = document.createElement('div'); el.className = 'drawer';
+    el.innerHTML = `<div class="pane"><div class="b" style="padding:6px 10px 12px">CardSplit <span class="small muted">v${VERSION}</span></div>
+      <button data-m="upload">📄  Upload statement PDF</button><button data-m="cards">💳  Cards &amp; due days</button><button data-m="export">⬇  Export backup (Excel)</button>
+      <button data-m="reload">⟳  Refresh data</button>${DEMO ? '' : '<button data-m="logout">⎋  Log out</button>'}</div>`;
+    el.addEventListener('click', async e => { const m = e.target.closest('[data-m]')?.dataset.m; el.remove();
+      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
+    document.body.appendChild(el);
+  },
+};
+document.addEventListener('click', e => { const a = e.target.closest('[data-action]'); if (!a) return; e.preventDefault(); A[a.dataset.action]?.(a, e); });
+document.addEventListener('input', e => {
+  const k = e.target.dataset?.filter; if (!k) return;
+  UI.f[k] = e.target.value; if (k === 'q') UI._focusQ = true; render();
+});
+
+/* ---------------- boot ---------------- */
+async function loadData() {
+  $('#root').innerHTML = '<div class="center"><div class="muted">Loading…</div></div>';
+  try {
+    S = await db.loadAll(); reindex();
+    if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
+    const made = await ensureInstallmentMonths();
+    render(); if (made) toast(`${made} installment month${made === 1 ? '' : 's'} added`);
+  } catch (e) {
+    console.error(e);
+    $('#root').innerHTML = `<div class="center"><div class="loginbox card"><div class="b">Could not load your data</div><div class="err">${esc(e.message || e)}</div><button class="btn block" style="margin-top:12px" onclick="location.reload()">Try again</button></div></div>`;
+  }
+}
+function loginScreen(msg = '') {
+  $('#root').innerHTML = `<div class="center"><form class="loginbox card" id="login">
+    <div class="big" style="margin-bottom:4px">CardSplit</div><div class="small muted">Log in with the account you made in Supabase.</div>
+    <label class="f"><span>Email</span><input class="in" type="email" name="email" autocomplete="username" required></label>
+    <label class="f"><span>Password</span><input class="in" type="password" name="password" autocomplete="current-password" required></label>
+    <button class="btn pri block" type="submit">Log in</button><div class="err">${esc(msg)}</div></form></div>`;
+  $('#login').addEventListener('submit', async e => {
+    e.preventDefault(); const f = new FormData(e.target);
+    const { error } = await sb.auth.signInWithPassword({ email: f.get('email'), password: f.get('password') });
+    if (error) loginScreen(error.message); else loadData();
+  });
+}
+async function boot() {
+  if (DEMO) {
+    let seed = { people: [{ id: 1, name: 'Me', kind: 'me', active: true }] };
+    try { const r = await fetch('demo-data.json'); if (r.ok) seed = await r.json(); } catch {}
+    window._dbg = { get S() { return S; }, get IX() { return IX; }, SHEETS, get UI() { return UI; }, personName };   // demo only, for testing
+    db = makeDemoDB(seed); return loadData();
+  }
+  if (!CONFIG.SUPABASE_URL || !CONFIG.SUPABASE_KEY) {
+    $('#root').innerHTML = `<div class="center"><div class="loginbox card"><div class="b">Almost there</div><p class="small">Open <b>index.html</b>, paste your Supabase <b>Project URL</b> and <b>Publishable key</b> into CONFIG at the top, and upload it again. See the setup guide.</p><p class="small muted">Want to look around first? Add <b>?demo</b> to the address.</p></div></div>`;
+    return;
+  }
+  const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+  sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+  db = makeSupabaseDB(sb);
+  const { data } = await sb.auth.getSession();
+  if (data.session) loadData(); else loginScreen();
+}
+boot();
+</script>
+</body>
+</html>
