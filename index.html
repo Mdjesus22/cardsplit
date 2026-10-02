@@ -225,7 +225,7 @@ let S = Object.fromEntries(TABLES.map(t => [t, []]));
 let IX = {};
 const UI = { view: 'home', month: addMonths(monthOf(todayISO()), -1), instFilter: 'active',
              mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null,
-             f: { scope: 'month', card: '', person: '', status: '', q: '' } };
+             f: { scope: 'month', card: '', people: [], status: '', q: '' } };
 
 // local mutations (DB first, then local copy)
 async function ins(t, rows) { const out = await db.insert(t, rows); S[t].push(...out); reindex(); return out; }
@@ -418,14 +418,27 @@ function viewHome() {
 }
 
 /* ---------------- TRANSACTIONS ---------------- */
+const peopleLabel = ids => { ids = ids || []; if (!ids.length) return 'Everyone'; const n = ids.map(personName); return n.length <= 2 ? n.join(', ') : `${n.slice(0, 2).join(', ')} +${n.length - 2}`; };
+function openPeoplePicker() {
+  const sorted = [...S.people].sort((a, b) => (a.kind === 'me' ? -1 : b.kind === 'me' ? 1 : a.name.localeCompare(b.name)));
+  openSheet({ title: 'Show people', body: () => `
+    <p class="small muted">Tick one or more. Transactions with any of them are shown.</p>
+    <div class="card list">${sorted.map(p => `<label class="item" style="cursor:pointer;align-items:center"><input type="checkbox" data-pp="${p.id}" ${(UI.f.people || []).includes(p.id) ? 'checked' : ''} style="width:20px;height:20px">
+      <div class="grow">${esc(p.name)}${p.kind !== 'person' ? ` <span class="pill">${esc(p.kind)}</span>` : ''}</div></label>`).join('')}</div>`,
+    foot: () => `<button class="btn" data-action="ppClear">Everyone</button><div class="grow"><button class="btn pri" data-action="closeSheet">Done</button></div>`,
+    mount: o => o.querySelectorAll('[data-pp]').forEach(el => el.addEventListener('change', () => {
+      const id = +el.dataset.pp, cur = new Set(UI.f.people || []); el.checked ? cur.add(id) : cur.delete(id); UI.f.people = [...cur]; render();
+    })) });
+}
 function filteredTx() {
   const f = UI.f, q = f.q.trim().toLowerCase();
   return S.transactions.filter(t => {
     if (f.scope === 'month' && t.month !== UI.month) return false;
     if (f.card && t.card_id !== +f.card) return false;
     const cs = IX.chargesByTx.get(t.id) || [];
-    if (f.person && !cs.some(c => c.person_id === +f.person)) return false;
-    if (f.status) { const pool = f.person ? cs.filter(c => c.person_id === +f.person) : cs; if (!pool.some(c => chargeStatus(c) === f.status)) return false; }
+    const ppl = f.people || [];
+    if (ppl.length && !cs.some(c => ppl.includes(c.person_id))) return false;
+    if (f.status) { const pool = ppl.length ? cs.filter(c => ppl.includes(c.person_id)) : cs; if (!pool.some(c => chargeStatus(c) === f.status)) return false; }
     if (q && !(t.description || '').toLowerCase().includes(q) && !(t.category || '').toLowerCase().includes(q)) return false;
     return true;
   }).sort((a, b) => (b.month.localeCompare(a.month)) || ((b.txn_date || '').localeCompare(a.txn_date || '')) || (b.id - a.id));
@@ -449,10 +462,11 @@ function viewTx() {
     <input id="fq" class="in" style="margin-top:10px" placeholder="Search description or category" value="${esc(f.q)}" data-filter="q">
     <div class="filters">
       <select class="in" data-filter="card">${opt('', 'All cards', f.card)}${S.cards.map(c => opt(c.id, c.code, f.card)).join('')}</select>
-      <select class="in" data-filter="person">${opt('', 'Everyone', f.person)}${S.people.map(p => opt(p.id, p.name, f.person)).join('')}</select>
+      <button class="in" data-action="pickPeople" style="text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span class="ell">${peopleLabel(f.people)}</span><span class="muted">▾</span></button>
       <select class="in" data-filter="status" style="grid-column:1/-1">${opt('', 'Any status', f.status)}${['unpaid', 'partial', 'paid', 'mine'].map(s => opt(s, STATUS_LABEL[s], f.status)).join('')}</select>
     </div>
-    <div class="sumline muted">${list.length} transaction${list.length === 1 ? '' : 's'} · ${peso(sum(list, t => t.amount))}</div>
+    <div class="sumline muted">${list.length} transaction${list.length === 1 ? '' : 's'} · ${peso(sum(list, t => t.amount))}${(f.people || []).length ? (() => { const cs = list.flatMap(t => IX.chargesByTx.get(t.id) || []).filter(c => f.people.includes(c.person_id));
+      return ` · <b>their share ${peso(sum(cs, c => c.amount))}</b> · still owed <b class="${sum(cs.filter(c => !isMe(c.person_id)), balance) > 0.004 ? 'over' : ''}">${peso(sum(cs.filter(c => !isMe(c.person_id)), balance))}</b>`; })() : ''}</div>
     <div class="card list">${list.slice(0, 300).map(txItem).join('') || '<div class="empty">Nothing here. Tap + to add a transaction.</div>'}
     ${list.length > 300 ? `<div class="empty small">Showing first 300. Use the filters to narrow down.</div>` : ''}</div>`;
 }
@@ -1354,7 +1368,7 @@ async function doImport() {
       await ins('charges', rows);
     }
     await ensureInstallmentMonths();
-    SHEETS.length = 0; drawSheets(); UI.month = m; UI.view = 'tx'; UI.f = { scope: 'month', card: String(st.card_id), person: '', status: '', q: '' };
+    SHEETS.length = 0; drawSheets(); UI.month = m; UI.view = 'tx'; UI.f = { scope: 'month', card: String(st.card_id), people: [], status: '', q: '' };
     render(); toast(`Imported ${pick.length} line${pick.length === 1 ? '' : 's'}${drop.length ? ` · removed ${drop.length}` : ''}`);
   } catch (e) { console.error(e); toast('Import stopped: ' + (e.message || e)); }
 }
@@ -1426,8 +1440,10 @@ const A = {
   newPlan: () => openPlan(null),
   txScope: el => { UI.f.scope = el.dataset.v; render(); },
   instFilter: el => { UI.instFilter = el.dataset.v; render(); },
-  filterCard: el => { SHEETS.length = 0; drawSheets(); UI.view = 'tx'; UI.f = { scope: 'month', card: el.dataset.card, person: '', status: '', q: '' }; render(); },
-  planTx: el => { const p = IX.inst.get(+el.dataset.id); UI.view = 'tx'; UI.f = { scope: 'all', card: '', person: '', status: '', q: p.item }; render(); },
+  pickPeople: () => openPeoplePicker(),
+  ppClear: () => { UI.f.people = []; closeSheet(); render(); },
+  filterCard: el => { SHEETS.length = 0; drawSheets(); UI.view = 'tx'; UI.f = { scope: 'month', card: el.dataset.card, people: [], status: '', q: '' }; render(); },
+  planTx: el => { const p = IX.inst.get(+el.dataset.id); UI.view = 'tx'; UI.f = { scope: 'all', card: '', people: [], status: '', q: p.item }; render(); },
   addCharge: () => { const d = SHEETS[SHEETS.length - 1].draft; const used = new Set(d.charges.map(c => c.person_id));
     const p = S.people.find(p => p.active && !used.has(p.id)); if (!p) return toast('Everyone is already listed');
     const left = r2(num(d.amount) - sum(d.charges, c => num(c.amount))); d.charges.push({ id: null, person_id: p.id, amount: left > 0 ? String(left) : '', promise_date: '', note: '' }); redrawTop(); },
