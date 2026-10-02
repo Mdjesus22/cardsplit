@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.3';
+const VERSION = '1.4';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -1001,8 +1001,8 @@ function moneyItems(from, to, opts = {}) {
     for (const c of S.charges) {
       if (!isHousehold(c.person_id)) continue;
       const t = IX.tx.get(c.transaction_id); if (!t || isConv(t)) continue;
-      const d = t.txn_date || t.month; if (!inR(d)) continue;
-      items.push({ kind: 'expense', date: d, amount: Number(c.amount), cat: cardCategory(t), desc: t.description, src: 'card', id: t.id, person_id: c.person_id });
+      const d = dueDate(t.card_id, t.month) || addMonths(t.month, 1); if (!inR(d)) continue;   // bill due date, not purchase date
+      items.push({ kind: 'expense', date: d, amount: Number(c.amount), cat: cardCategory(t), desc: t.description, src: 'card', id: t.id, person_id: c.person_id, card: t.card_id, stmt: t.month });
     }
   }
   return items;
@@ -1070,7 +1070,8 @@ function viewMoney() {
     </div>
     <div class="seg" style="margin-top:10px">${seg('mPlanned', 'all', 'All', UI.mPlanned)}${seg('mPlanned', 'planned', 'Planned', UI.mPlanned)}${seg('mPlanned', 'unplanned', 'Unplanned', UI.mPlanned)}</div>
     <label class="small row" style="margin:8px 2px;gap:6px"><input type="checkbox" data-action="mCards" ${UI.mCards ? 'checked' : ''} ${UI.mPlanned !== 'all' ? 'disabled' : ''}>
-      Include household card spending${UI.mPlanned !== 'all' ? ' (only in "All")' : cardExp.length ? ` · ${cardExp.length} items ${peso(sum(cardExp, x => x.amount))}` : ''}</label>
+      Include household card bills due in ${esc(p.label)}${UI.mPlanned !== 'all' ? ' (only in "All")' : cardExp.length ? ` · ${cardExp.length} items ${peso(sum(cardExp, x => x.amount))}` : ''}</label>
+    <div class="small muted" style="margin:-4px 2px 4px 26px">Card items count in the month the bill is due. Example: the ${MON[+addMonths(UI.mMonth, -1).slice(5, 7) - 1]} statement is due in ${MON[+UI.mMonth.slice(5, 7) - 1]}, so it is matched with ${MON[+UI.mMonth.slice(5, 7) - 1]} income.</div>
     <div class="sec">Where the money went · ${esc(p.label)}</div>
     <div class="card">${hbars(byCat(exp), tExp, 'expense')}</div>
     <div class="sec">Income vs expenses · last 6 months</div>
@@ -1239,7 +1240,7 @@ function openMoneyCat(kind, cats) {
   openSheet({ title: `${cats.includes('|') ? 'Others' : cats} · ${p.label}`, body: () => `
     <div class="card"><div class="small muted">Total</div><div class="big">${peso(sum(items, x => x.amount))}</div></div>
     <div class="card list">${items.map(x => `<div class="item" data-action="${x.src === 'card' ? 'openTx' : 'openEntry'}" data-id="${x.id}"><div class="grow"><div class="b ell">${esc(x.desc)}</div>
-      <div class="small muted">${dateLabel(x.date)} · ${x.src === 'card' ? 'Card' : 'Entry'}${set.size > 1 ? ' · ' + esc(x.cat) : ''}${x.person_id && !isMe(x.person_id) ? ' · ' + esc(personName(x.person_id)) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">Nothing here</div>'}</div>
+      <div class="small muted">${x.src === 'card' ? `Due ${dateLabel(x.date)} · ${esc(cardCode(x.card))} ${MON[+x.stmt.slice(5, 7) - 1]} statement` : dateLabel(x.date) + ' · Entry'}${set.size > 1 ? ' · ' + esc(x.cat) : ''}${x.person_id && !isMe(x.person_id) ? ' · ' + esc(personName(x.person_id)) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">Nothing here</div>'}</div>
     ${kind === 'expense' && items.some(x => x.src === 'card') ? '<p class="small muted">Card items are put in a category automatically. To change one, open it and set its Category to one of these names.</p>' : ''}` });
 }
 function openAddChooser() {
