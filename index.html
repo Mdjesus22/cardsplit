@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.4';
+const VERSION = '1.5';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -419,6 +419,7 @@ const I = {
   download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5"/><path d="M5 19.5h14"/>',
   refresh: '<path d="M19 12a7 7 0 1 1-2.05-4.95"/><path d="M19 5v4h-4"/>',
   logout: '<path d="M14 5h3.5A1.5 1.5 0 0 1 19 6.5v11a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M10 8l-4 4 4 4M6 12h9"/>',
+  tag: '<path d="M4 4.5h7.2l8.3 8.3-7.2 7.2L4 11.7z"/><circle cx="8.4" cy="8.9" r="1.3"/>',
 };
 const icon = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
 const LOGO = '<svg class="logo" viewBox="0 0 32 24" aria-hidden="true"><rect x="1" y="6" width="20" height="15" rx="4.5" fill="#CBBDFF"/><rect x="11" y="3" width="20" height="15" rx="4.5" fill="#FFC9B0" fill-opacity=".92"/></svg>';
@@ -567,7 +568,10 @@ function txSumLine(d) {
 }
 function txBody(d) {
   const inst = d.installment_id ? IX.inst.get(d.installment_id) : null;
-  const cats = [...new Set(S.transactions.map(t => t.category).filter(Boolean))].sort();
+  const moneyCats = S._money ? catsOf('expense').map(c => c.name) : [], mset = new Set(moneyCats);
+  const oldCats = [...new Set(S.transactions.map(t => t.category).filter(c => c && !mset.has(c) && c !== CONVERTED))].sort();
+  const catOpt = c => `<option value="${esc(c)}" ${c === d.category ? 'selected' : ''}>${esc(c)}</option>`;
+  const autoCat = S._money ? ` (${cardCategory({ ...d, category: null })})` : '';
   const people = S.people.filter(p => p.active || d.charges.some(c => c.person_id === p.id));
   return `
     ${d.id && isConv(IX.tx.get(d.id)) ? `<div class="card small" style="margin-top:12px">🔁 <b>Converted to installment</b> — this line and the line it cancels are left out, so nobody owes them. Only the installment months count. <button class="linkish" data-action="unconvert" data-id="${d.id}">undo for this line</button></div>`
@@ -580,7 +584,12 @@ function txBody(d) {
       <label class="f"><span>Statement month</span><input class="in" type="month" data-k="month" data-month value="${d.month.slice(0, 7)}"></label>
       <label class="f"><span>Date bought</span><input class="in" type="date" data-k="txn_date" value="${esc(d.txn_date || '')}"></label>
     </div>
-    <label class="f"><span>Category</span><input class="in" data-k="category" list="cats" value="${esc(d.category || '')}"><datalist id="cats">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist></label>
+    <label class="f"><span>Category</span><select class="in" data-k="category" data-cat="expense">
+      <option value="" ${!d.category ? 'selected' : ''}>Auto${autoCat}</option>
+      ${d.category && !mset.has(d.category) && !oldCats.includes(d.category) ? catOpt(d.category) : ''}
+      ${moneyCats.length ? `<optgroup label="Categories">${moneyCats.map(catOpt).join('')}</optgroup>` : ''}
+      ${oldCats.length ? `<optgroup label="Older labels (from Excel)">${oldCats.map(catOpt).join('')}</optgroup>` : ''}
+      ${S._money ? '<option value="__newcat">＋ New category…</option>' : ''}</select></label>
     <div class="row" style="margin-top:14px"><div class="grow b">Who pays</div>
       <button class="btn sm" data-action="splitEq">Split equally</button><button class="btn sm" data-action="addCharge">+ Person</button></div>
     <div class="sumline" id="sumline">${txSumLine(d)}</div>
@@ -1155,7 +1164,7 @@ function multiBody(d) {
     ${d.rows.map((r, i) => `<div class="charge"><div class="grid2" style="gap:6px">
       <input class="in" type="date" data-ri="${i}" data-rk="entry_date" value="${esc(r.entry_date)}">
       <input class="in" type="number" inputmode="decimal" step="0.01" placeholder="₱ amount" data-ri="${i}" data-rk="amount" value="${esc(r.amount)}">
-      <select class="in" data-ri="${i}" data-rk="category_id">${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === r.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <select class="in" data-ri="${i}" data-rk="category_id" data-cat="${d.kind}">${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === r.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}<option value="__newcat">＋ New category…</option></select>
       <input class="in" placeholder="What for (optional)" data-ri="${i}" data-rk="description" value="${esc(r.description)}">
     </div></div>`).join('')}
     <p class="small muted">Rows without an amount are skipped.</p>`;
@@ -1187,7 +1196,7 @@ function openRec(id) {
       <div class="grid2">
         <label class="f"><span>Amount (₱) each time</span><input class="in" type="number" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
         <label class="f"><span>Days of the month</span><input class="in" data-k="days" value="${esc(d.days)}" placeholder="3, 18"></label>
-        <label class="f"><span>Category</span><select class="in" data-k="category_id" data-num>${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === d.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="f"><span>Category</span><select class="in" data-k="category_id" data-num data-cat="${d.kind}">${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === d.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}<option value="__newcat">＋ New category…</option></select></label>
         <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num data-hh>${hhOpts(d.person_id)}</select></label>
         <label class="f"><span>Via</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
         <label class="f"><span>Start from</span><input class="in" type="date" data-k="start_date" value="${esc(d.start_date)}"></label>
@@ -1540,13 +1549,11 @@ const A = {
   entryKind: el => { const d = SHEETS[SHEETS.length - 1].draft; d.kind = el.dataset.v; d.category_id = catsOf(d.kind)[0]?.id; if (d.kind === 'income') d.method = 'Bank transfer'; SHEETS[SHEETS.length - 1].title = d.kind === 'income' ? 'New income' : 'New expense'; drawSheets(); },
   saveEntry: el => saveEntry(!!el.dataset.more),
   delEntry: async () => { const d = SHEETS[SHEETS.length - 1].draft; if (!(await ask('Delete this entry?', 'Delete', true))) return; try { await del('entries', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
-  newCategory: el => { const kind = el.dataset.kind, owner = SHEETS[SHEETS.length - 1]; const d = { name: '' };
-    openSheet({ title: kind === 'income' ? 'New income category' : 'New expense category', draft: d, mount: o => bindDraft(o, d),
-      body: () => `<label class="f"><span>Name</span><input class="in" data-k="name" placeholder="e.g. Pets"></label>`,
-      foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="addCategory" data-kind="${kind}">Add</button></div>`, owner }); },
+  newCategory: el => { const owner = SHEETS[SHEETS.length - 1];
+    openNewCategory(el.dataset.kind, c => { if (owner?.draft && 'category_id' in owner.draft) owner.draft.category_id = c.id; redrawTop(); }); },
   addCategory: async el => { const top = SHEETS[SHEETS.length - 1], name = top.draft.name.trim(), kind = el.dataset.kind; if (!name) return toast('Add a name');
     if (S.categories.some(c => c.kind === kind && c.name.toLowerCase() === name.toLowerCase())) return toast('That category already exists');
-    try { const [c] = await ins('categories', [{ kind, name, sort: 100 }]); closeSheet(); if (top.owner?.draft) { top.owner.draft.category_id = c.id; redrawTop(); } toast('Added'); } catch (e) { toast('Could not add: ' + e.message); } },
+    try { const [c] = await ins('categories', [{ kind, name, sort: 100 }]); closeSheet(); top.onAdded?.(c); render(); toast('Added'); } catch (e) { toast('Could not add: ' + e.message); } },
   multiEntry: () => openMulti(),
   multiKind: el => { const d = SHEETS[SHEETS.length - 1].draft; d.kind = el.dataset.v; const c = catsOf(d.kind)[0]?.id; d.rows.forEach(r => r.category_id = c); if (d.kind === 'income') d.method = 'Bank transfer'; redrawTop(); },
   multiAdd: () => { const s = SHEETS[SHEETS.length - 1]; const r = s.blank(); r.category_id = catsOf(s.draft.kind)[0]?.id; s.draft.rows.push(r); redrawTop(); },
@@ -1648,10 +1655,10 @@ const A = {
   menu: () => {
     const el = document.createElement('div'); el.className = 'drawer';
     el.innerHTML = `<div class="pane"><div class="b row" style="padding:6px 10px 12px;gap:8px">${LOGO}CardSplit <span class="small muted">v${VERSION}</span></div>
-      <button data-m="upload">${icon('doc')}Upload statement PDF</button><button data-m="cards">${icon('card')}Cards &amp; due days</button><button data-m="export">${icon('download')}Export backup (Excel)</button>
+      <button data-m="upload">${icon('doc')}Upload statement PDF</button><button data-m="cards">${icon('card')}Cards &amp; due days</button>${S._money ? `<button data-m="cats">${icon('tag')}Categories</button>` : ''}<button data-m="export">${icon('download')}Export backup (Excel)</button>
       <button data-m="reload">${icon('refresh')}Refresh data</button>${DEMO ? '' : `<button data-m="logout">${icon('logout')}Log out</button>`}</div>`;
     el.addEventListener('click', async e => { const m = e.target.closest('[data-m]')?.dataset.m; el.remove();
-      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
+      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'cats') openCategories(); if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
     document.body.appendChild(el);
   },
 };
@@ -1664,6 +1671,35 @@ function openNewPerson(onAdded, opts = {}) {
       ${S._money ? `<label class="small row" style="gap:8px"><input type="checkbox" id="nphh" ${d.household ? 'checked' : ''} style="width:20px;height:20px"> Household (partner) — counts in Money as "ours"</label>` : ''}`,
     foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="addPerson">Add</button></div>` });
 }
+function openNewCategory(kind, onAdded) {
+  const d = { name: '' };
+  openSheet({ title: kind === 'income' ? 'New income category' : 'New expense category', draft: d, onAdded,
+    mount: o => { bindDraft(o, d); setTimeout(() => o.querySelector('[data-k=name]')?.focus(), 50); },
+    body: () => `<label class="f"><span>Name</span><input class="in" data-k="name" placeholder="${kind === 'income' ? 'e.g. Freelance' : 'e.g. Pets'}" autocomplete="off"></label>`,
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="addCategory" data-kind="${kind}">Add</button></div>` });
+}
+function openCategories() {
+  openSheet({ title: 'Categories', body: () => ['expense', 'income'].map(k => `
+    <div class="sec">${k === 'income' ? 'Income' : 'Expense'} (${catsOf(k).length})</div>
+    <div class="chips">${catsOf(k).map(c => `<span class="chip" style="padding:6px 10px;font-size:13px">${esc(c.name)}</span>`).join('')}
+      <button class="chip brand" style="border:0;cursor:pointer;padding:6px 10px;font-size:13px" data-action="newCategory" data-kind="${k}">＋ New</button></div>`).join('')
+    + '<p class="small muted" style="margin-top:14px">Card transactions use the expense categories. To change one, open the transaction on Cards and pick it under Category.</p>' });
+}
+// "＋ New category…" in any category dropdown
+function pickNewCategory(e) {
+  const el = e.target;
+  if (el.tagName !== 'SELECT' || el.value !== '__newcat') return;
+  e.stopImmediatePropagation();
+  const d = SHEETS[SHEETS.length - 1]?.draft, k = el.dataset.k, ri = el.dataset.ri;
+  el.value = String(ri != null ? d.rows[+ri].category_id : (d?.[k] ?? ''));
+  openNewCategory(el.dataset.cat || 'expense', c => {
+    if (!d) return;
+    if (ri != null) d.rows[+ri].category_id = c.id; else if (k === 'category') d.category = c.name; else if (k) d[k] = c.id;
+    redrawTop();
+  });
+}
+document.addEventListener('input', pickNewCategory, true);
+document.addEventListener('change', pickNewCategory, true);
 function pickNewPerson(e) {
   const el = e.target;
   if (el.tagName !== 'SELECT' || el.value !== '__new') return;
