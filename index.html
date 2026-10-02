@@ -368,6 +368,14 @@ const cardsSeg = () => `<div class="seg" style="margin-top:6px"><button class="$
 const navBtn = (v, ic, label) => `<button class="${UI.view === v || (v === 'tx' && UI.view === 'inst') ? 'on' : ''}" data-action="go" data-view="${v}"><span class="ic">${ic}</span><span>${label}</span></button>`;
 
 /* ---------------- HOME ---------------- */
+// Bill total (from the PDF / typed in) vs the sum of items in the app for that card + month
+function stmtTotals(st, inApp) {
+  const bill = st?.total_due == null ? null : Number(st.total_due);
+  if (bill == null) return `<div class="b">${peso(inApp)}</div><div class="small muted">in app</div>`;
+  const diff = r2(inApp - bill);
+  return `<div class="b">${peso(bill)}</div><div class="small muted">bill total</div>` +
+    (Math.abs(diff) < 0.01 ? `<div class="small" style="color:var(--paid)">matches app ✓</div>` : `<div class="small over">app ${peso(inApp)} ⚠</div>`);
+}
 function viewHome() {
   const m = UI.month, today = todayISO();
   const txs = S.transactions.filter(t => t.month === m);
@@ -385,7 +393,7 @@ function viewHome() {
       <div class="grow"><div class="b ell">${esc(cardLabel(id))}</div>
         <div class="small muted">Due ${due ? dateLabelY(due) : '— set due day'} · ${ct.length} item${ct.length === 1 ? '' : 's'}</div>
         <div class="small muted">Mine ${peso(sum(cch.filter(c => isMe(c.person_id)), c => c.amount))} · Others ${peso(sum(cch.filter(c => !isMe(c.person_id)), c => c.amount))}</div></div>
-      <div class="right"><div class="b">${peso(st?.total_due ?? sum(ct, t => t.amount))}</div>${badge}</div></div>`;
+      <div class="right">${stmtTotals(st, sum(ct, t => t.amount))}${badge}</div></div>`;
   }).join('');
   const byPerson = [...groupBy(others, 'person_id')].map(([pid, cs]) => ({ pid, bal: sum(cs, balance), amt: sum(cs, c => c.amount) }))
     .filter(x => Math.abs(x.bal) > 0.004).sort((a, b) => b.bal - a.bal);
@@ -577,7 +585,8 @@ function openStmt(cardId) {
   const txTotal = sum(S.transactions.filter(t => t.month === m && t.card_id === cardId), t => t.amount);
   openSheet({ title: `${cardLabel(cardId)} · ${monthLabel(m)}`, draft: d,
     body: () => `
-      <p class="small muted">Items in the app for this statement: <b>${peso(txTotal)}</b></p>
+      <p class="small muted">Items in the app for this statement: <b>${peso(txTotal)}</b>${st?.total_due != null ? ` · Bill total: <b>${peso(st.total_due)}</b> · Difference: <b class="${Math.abs(r2(txTotal - st.total_due)) >= 0.01 ? 'over' : ''}">${peso(r2(txTotal - st.total_due))}</b>` : ''}</p>
+      ${st?.total_due != null && Math.abs(r2(txTotal - st.total_due)) >= 0.01 ? `<p class="small">Not matching? Common reasons: a bill total saved on the wrong card, an installment month the app added that isn't on this bill, or a line entered twice. Re-uploading this card's PDF shows what's in the app but not on the bill.</p>` : ''}
       <label class="f"><span>Due date</span><input class="in" type="date" data-k="due_date" value="${esc(d.due_date)}"></label>
       <div class="grid2">
         <label class="f"><span>Total due on bill (optional)</span><input class="in" type="number" step="0.01" data-k="total_due" value="${esc(d.total_due)}"></label>
@@ -1191,7 +1200,7 @@ function parseStatement(pages) {
       const t = l.text.trim(); const m = TX_RE.exec(t);
       if (!m) { const c = CARDNO_RE.exec(t); if (c) last4 = c[1]; continue; }
       let desc = m[3].replace(/\s{2,}/g, ' ').trim(), k = null, n = null;
-      const im = /(?:^|\s)(\d{1,2})\s*\/\s*(\d{1,2})$/.exec(desc);
+      const im = /(?:^|\s|(?<=[A-Z]))(\d{1,2})\s*\/\s*(\d{1,2})$/.exec(desc);
       if (im && +im[1] >= 1 && +im[1] <= +im[2] && +im[2] <= 60) { k = +im[1]; n = +im[2]; desc = desc.slice(0, im.index).trim(); }
       const neg = /^\(|^-/.test(m[4]) || !!m[5];
       const amount = r2((neg ? -1 : 1) * Number(m[4].replace(/[(),\-]/g, '')));
@@ -1207,7 +1216,7 @@ function planImport(st) {
   const existing = S.transactions.filter(t => t.card_id === cardId && t.month === m);
   const used = new Set();
   for (const x of L) {
-    x.cardId = (x.last4 && S.cards.find(c => c.last4 === x.last4)?.id) || cardId;
+    x.cardId = st.multiCard ? ((x.last4 && S.cards.find(c => c.last4 === x.last4)?.id) || cardId) : cardId;
     x.person = x.amount < 0 ? IX.me : (st.defaultPerson || IX.me);
     x.kind = 'new'; x.on = true; x.plan = null; x.planNo = null; x.matchTx = null; x.makePlan = false;
     if (x.amount < 0 && /PAYMENT/i.test(x.desc)) { x.kind = 'payment'; x.on = false; continue; }
@@ -1222,6 +1231,8 @@ function planImport(st) {
     if (dup) { used.add(dup.id); x.kind = 'dup'; x.on = false; x.matchTx = dup; continue; }
     if (x.k != null) { x.kind = 'newplan'; x.makePlan = true; }
   }
+  const matched = new Set(L.map(x => x.matchTx?.id).filter(Boolean));
+  st.orphans = S.transactions.filter(t => t.card_id === cardId && t.month === m && t.source === 'auto' && !matched.has(t.id)).map(t => ({ t, remove: false }));
 }
 function maskCards(s) { return s.replace(/\b\d{4}([- ]?)\d{4}\1\d{4}\1(\d{4})\b/g, 'XXXX-XXXX-XXXX-$2'); }
 
@@ -1231,7 +1242,8 @@ function openUpload() {
   openSheet(sheet);
 }
 function uploadFoot(d) {
-  if (d.step === 'review') { const n = d.st.lines.filter(x => x.on).length; return `<button class="btn" data-action="upBack">Back</button><div class="grow"><button class="btn pri" data-action="upImport" ${n ? '' : 'disabled'}>Import ${n} line${n === 1 ? '' : 's'}</button></div>`; }
+  if (d.step === 'review') { const n = d.st.lines.filter(x => x.on).length, rm = (d.st.orphans || []).filter(o => o.remove).length;
+    return `<button class="btn" data-action="upBack">Back</button><div class="grow"><button class="btn pri" data-action="upImport" ${n || rm ? '' : 'disabled'}>Import ${n} line${n === 1 ? '' : 's'}${rm ? ` · remove ${rm}` : ''}</button></div>`; }
   return `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="upRead">Read PDF</button></div>`;
 }
 function uploadBody(d) {
@@ -1249,6 +1261,7 @@ function uploadBody(d) {
   const on = st.lines.filter(x => x.on);
   return `
     <div class="card small">${st.info.bank ? `<b>${esc(st.info.bank)}</b> statement` : 'Statement'}${st.info.last4 ? ` · card ••${esc(st.info.last4)}` : ''} · ${st.lines.length} lines found</div>
+    ${(() => { const c = IX.card.get(st.card_id); return !st.multiCard && st.info.last4 && c?.last4 && c.last4 !== st.info.last4 ? `<div class="err">⚠ This PDF is for card ••${esc(st.info.last4)}, but ${esc(c.code)} ••${esc(c.last4)} is picked below. Check the Card.</div>` : !st.info.last4 ? `<div class="small muted">Card number not found in the PDF — check the Card below.</div>` : ''; })()}
     <div class="grid2">
       <label class="f"><span>Card</span><select class="in" data-k="card_id" data-num data-re>${S.cards.map(c => `<option value="${c.id}" ${c.id === st.card_id ? 'selected' : ''}>${esc(c.code)}${c.last4 ? ' ••' + c.last4 : ''}</option>`).join('')}</select></label>
       <label class="f"><span>Statement month</span><input class="in" type="month" data-k="month" data-month data-re value="${st.month.slice(0, 7)}"></label>
@@ -1266,6 +1279,11 @@ function uploadBody(d) {
         <div class="row" style="width:100%">${x.kind === 'new' || x.kind === 'newplan' ? `<select class="in" data-li="${i}" data-lk="person" style="max-width:190px;min-height:36px;padding:6px 8px">${opts(x.person)}</select>` : ''}
           <div class="grow small">${tag(x)}${x.kind === 'newplan' ? `<label class="small" style="display:block;margin-top:4px"><input type="checkbox" data-li="${i}" data-lk="makePlan" ${x.makePlan ? 'checked' : ''}> Also create this installment plan</label>` : ''}</div></div>
       </div>`).join('') || '<div class="empty">No transaction lines found.</div>'}</div>
+    ${st.orphans?.length ? `<div class="sec">In the app but NOT on this bill (${st.orphans.length}) · ${peso(sum(st.orphans, o => o.t.amount))}</div>
+      <p class="small muted" style="margin:0 2px 6px">Installment months the app added by itself for this card and month, but the bill doesn't show them. If the loan is finished or was paid off, tick Remove. Then on Installments, set that plan to "Ended early" so it stops adding months.</p>
+      <div class="card list">${st.orphans.map((o, i) => `<div class="item" style="cursor:default"><input type="checkbox" data-oi="${i}" ${o.remove ? 'checked' : ''} style="width:20px;height:20px">
+        <div class="grow"><div class="b ell">${esc(o.t.description)}</div><div class="small muted">${o.t.installment_no ? `Month ${o.t.installment_no}/${IX.inst.get(o.t.installment_id)?.months ?? '?'} · ` : ''}${(IX.chargesByTx.get(o.t.id) || []).map(c => esc(personName(c.person_id))).join(', ')}</div></div>
+        <div class="right"><div class="b">${peso(o.t.amount)}</div><div class="small muted">Remove</div></div></div>`).join('')}</div>` : ''}
     <p class="small muted">After importing, open any transaction to split it between people.</p>`;
 }
 function mountUpload(o, d) {
@@ -1279,6 +1297,7 @@ function mountUpload(o, d) {
     const x = st.lines[+el.dataset.li], k = el.dataset.lk;
     x[k] = el.type === 'checkbox' ? el.checked : Number(el.value); if (k === 'on') redrawTop();
   }));
+  o.querySelectorAll('[data-oi]').forEach(el => el.addEventListener('change', () => { st.orphans[+el.dataset.oi].remove = el.checked; redrawTop(); }));
   o.querySelector('#setall')?.addEventListener('change', e => { const v = Number(e.target.value); if (!v) return; st.lines.forEach(x => { if (x.on && (x.kind === 'new' || x.kind === 'newplan')) x.person = v; }); redrawTop(); });
 }
 async function readUpload() {
@@ -1294,6 +1313,7 @@ async function readUpload() {
   const st = parseStatement(pages);
   d.raw = maskCards(st.rawText);
   if (!st.lines.length) { d.err = 'No transactions found. Is this a scanned/photo PDF? Tap the button below and send me the text so I can add this bank.'; return redrawTop(); }
+  st.multiCard = new Set(st.lines.map(x => x.last4).filter(Boolean)).size > 1;
   const byLast4 = st.info.last4 && S.cards.find(c => c.last4 === st.info.last4);
   const byBank = st.info.bank && S.cards.find(c => c.active && (c.code + ' ' + (c.bank || '')).toUpperCase().includes(st.info.bank.toUpperCase()));
   st.card_id = (byLast4 || byBank || S.cards.find(c => c.active) || S.cards[0])?.id;
@@ -1305,9 +1325,11 @@ async function readUpload() {
 }
 async function doImport() {
   const st = SHEETS[SHEETS.length - 1].draft.st, m = st.month;
-  const pick = st.lines.filter(x => x.on);
-  if (!pick.length) return;
+  const pick = st.lines.filter(x => x.on), drop = (st.orphans || []).filter(o => o.remove);
+  if (!pick.length && !drop.length) return;
+  if (drop.length && !(await ask(`Remove ${drop.length} installment month${drop.length === 1 ? '' : 's'} that ${drop.length === 1 ? "isn't" : "aren't"} on this bill (${peso(sum(drop, o => o.t.amount))})?`, 'Remove', true))) return;
   try {
+    for (const o of drop) await del('transactions', o.t.id);
     // 1) statement: due date / totals
     const s = IX.stmt.get(st.card_id + '|' + m);
     const srow = { due_date: st.info.due || null, total_due: st.info.total ?? null, min_due: st.info.min ?? null };
@@ -1333,7 +1355,7 @@ async function doImport() {
     }
     await ensureInstallmentMonths();
     SHEETS.length = 0; drawSheets(); UI.month = m; UI.view = 'tx'; UI.f = { scope: 'month', card: String(st.card_id), person: '', status: '', q: '' };
-    render(); toast(`Imported ${pick.length} line${pick.length === 1 ? '' : 's'}`);
+    render(); toast(`Imported ${pick.length} line${pick.length === 1 ? '' : 's'}${drop.length ? ` · removed ${drop.length}` : ''}`);
   } catch (e) { console.error(e); toast('Import stopped: ' + (e.message || e)); }
 }
 
