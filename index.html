@@ -736,14 +736,21 @@ async function savePlan() {
 function personStats(pid) {
   const cs = IX.chargesByPerson.get(pid) || [];
   const open = cs.filter(c => balance(c) > 0.004);
-  return { bal: sum(cs, balance), open: open.length, oldest: open.map(c => IX.tx.get(c.transaction_id)?.month).sort()[0] };
+  const cred = cs.filter(c => balance(c) < -0.004);
+  return { bal: sum(cs, balance), open: open.length, unpaid: sum(open, balance), credit: r2(-sum(cred, balance)), credits: cred.length,
+           oldest: open.map(c => IX.tx.get(c.transaction_id)?.month).sort()[0] };
+}
+// Charges where the person has a credit: a refund line, or paid more than the item
+function creditCharges(pid) {
+  return (IX.chargesByPerson.get(pid) || []).filter(c => balance(c) < -0.004).map(c => ({ c, t: IX.tx.get(c.transaction_id) }))
+    .sort((a, b) => a.t.month.localeCompare(b.t.month) || a.c.id - b.c.id);
 }
 function viewPeople() {
   const ppl = S.people.filter(p => p.kind !== 'me').map(p => ({ p, s: personStats(p.id) }))
     .sort((a, b) => (b.s.bal - a.s.bal) || a.p.name.localeCompare(b.p.name));
   const owing = ppl.filter(x => x.s.bal > 0.004), clear = ppl.filter(x => x.s.bal <= 0.004);
   const item = ({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow"><div class="b">${esc(p.name)} ${p.kind !== 'person' ? `<span class="pill">${p.kind}</span>` : ''}</div>
-    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
+    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.credits ? ` · credit ${peso(s.credit)}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
   return `
     <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div></div><button class="btn sm" data-action="newPerson">+ Person</button></div>
     <div class="sec">Still owe you</div><div class="card list">${owing.map(item).join('') || '<div class="empty">Nobody owes you 🎉</div>'}</div>
@@ -781,7 +788,8 @@ function personBody(p, d) {
     .sort((a, b) => b.x.received_on.localeCompare(a.x.received_on) || b.x.id - a.x.id).slice(0, 15);
   const s = personStats(p.id);
   return `
-    <div class="card"><div class="small muted">Still owes you</div><div class="big ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>
+    <div class="card"><div class="small muted">${s.bal < -0.004 ? 'They have a credit of' : 'Still owes you'}</div><div class="big ${s.bal > 0.004 ? 'over' : ''}" style="${s.bal < -0.004 ? 'color:var(--paid)' : ''}">${peso(Math.abs(s.bal))}</div>
+      ${s.credits ? `<div class="small" style="margin-top:4px">= unpaid items <b>${peso(s.unpaid)}</b> − credits <b style="color:var(--paid)">${peso(s.credit)}</b></div>` : ''}</div>
     ${p.kind !== 'me' ? `<div class="card"><div class="b">Record a payment</div>
       <div class="grid2"><label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="pay" value="${esc(d.pay)}"></label>
       <label class="f"><span>Date</span><input class="in" type="date" data-k="pay_on" value="${d.pay_on}"></label></div>
@@ -792,6 +800,13 @@ function personBody(p, d) {
     <div class="card list">${items.map(({ c, t }) => { const st = chargeStatus(c); return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
       <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}${c.promise_date ? ` · promised ${dateLabel(c.promise_date)}` : ''}</div></div>
       <div class="right"><div class="b">${peso(balance(c))}</div><span class="chip ${st}">${STATUS_LABEL[st]}</span></div></div>`; }).join('') || '<div class="empty">Nothing unpaid 🎉</div>'}</div>
+    ${(() => { const cr = creditCharges(p.id); if (!cr.length) return '';
+      return `<div class="sec">Credits (${cr.length}) · ${peso(-sum(cr, x => balance(x.c)))}</div>
+      <p class="small muted" style="margin:0 2px 6px">Money in their favour — a refund line charged to them, or a payment bigger than the item. It's already taken off "Still owes you".</p>
+      <div class="card list">${cr.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
+        <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `paid ${peso(received(c))} on ${peso(c.amount)}`}</div></div>
+        <div class="right b" style="color:var(--paid)">${peso(-balance(c))}</div></div>`).join('')}</div>
+      ${items.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
     <div class="sec">Recent payments</div>
     <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
     <div class="sec">Edit</div>
@@ -1441,6 +1456,13 @@ const A = {
   txScope: el => { UI.f.scope = el.dataset.v; render(); },
   instFilter: el => { UI.instFilter = el.dataset.v; render(); },
   pickPeople: () => openPeoplePicker(),
+  useCredits: async el => { const pid = +el.dataset.id, cr = creditCharges(pid);
+    const pool = r2(-sum(cr, x => balance(x.c))); const { out } = allocate(pid, pool); const used = sum(out, x => x.take);
+    if (!(used > 0.004)) return toast('Nothing to apply');
+    if (!(await ask(`Use ${peso(used)} of ${personName(pid)}'s credit to pay ${out.length} unpaid item${out.length === 1 ? '' : 's'}, oldest first? "Still owes you" stays the same — the items just show as paid.`, 'Use credit'))) return;
+    const today = todayISO(), rows = out.map(x => ({ charge_id: x.c.id, amount: x.take, received_on: today, note: 'Paid using credit' }));
+    let left = used; for (const { c } of cr) { if (left <= 0.004) break; const take = r2(Math.min(-balance(c), left)); rows.push({ charge_id: c.id, amount: -take, received_on: today, note: 'Credit used on other items' }); left = r2(left - take); }
+    try { await ins('collections', rows); redrawTop(); render(); toast('Credit applied'); } catch (e) { toast('Could not apply: ' + e.message); } },
   ppClear: () => { UI.f.people = []; closeSheet(); render(); },
   filterCard: el => { SHEETS.length = 0; drawSheets(); UI.view = 'tx'; UI.f = { scope: 'month', card: el.dataset.card, people: [], status: '', q: '' }; render(); },
   planTx: el => { const p = IX.inst.get(+el.dataset.id); UI.view = 'tx'; UI.f = { scope: 'all', card: '', people: [], status: '', q: p.item }; render(); },
@@ -1455,6 +1477,8 @@ const A = {
     try { await del('transactions', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
   addPay: el => openPay(+el.dataset.charge),
   savePay: async el => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); if (!amt) return toast('Add the amount');
+    const ch = IX.charge.get(+el.dataset.charge), left = balance(ch);
+    if (amt > left + 0.004 && !(await ask(`That's ${peso(r2(amt - left))} more than what's left (${peso(left)}). The extra becomes a credit for ${personName(ch.person_id)}. Save anyway?`, 'Save'))) return;
     try { await ins('collections', [{ charge_id: +el.dataset.charge, amount: amt, received_on: d.received_on || todayISO(), note: (d.note || '').trim() || null }]); closeSheet(); redrawTop(); render(); toast('Payment saved'); }
     catch (e) { toast('Could not save: ' + e.message); } },
   rmPay: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; await del('collections', +el.dataset.id); redrawTop(); render(); },
