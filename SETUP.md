@@ -105,7 +105,7 @@ Both SQL files only **add** things. They never drop or delete anything. If you r
 
 ## Part E — Upload a statement PDF (RCBC)
 
-1. On **Home**, tap **📄 Upload statement PDF**, then choose the e-statement PDF.
+1. On **Home**, tap **Upload statement PDF**, then choose the e-statement PDF.
 2. If the PDF has a password, type it in. The app doesn't save it.
 3. Tap **Read PDF** and check the list:
    - **Payments to the bank** (CASH PAYMENT) are skipped automatically.
