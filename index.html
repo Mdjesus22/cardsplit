@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.5';
+const VERSION = '1.6';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -307,6 +307,31 @@ const personName = pid => IX.person.get(pid)?.name ?? '?';
 const CONVERTED = 'Converted to installment';
 const isConv = t => !!t && t.category === CONVERTED;
 const live = c => !isConv(IX.tx.get(c.transaction_id));
+// Advance = they paid MORE than the item (a refund line is not an advance). You hold this money until it's used.
+const advanceOf = c => (Number(c.amount) > 0 && live(c)) ? Math.max(0, r2(-balance(c))) : 0;
+const personAdvance = pid => r2(sum(IX.chargesByPerson.get(pid) || [], advanceOf));
+function advanceCharges(pid) {
+  return (IX.chargesByPerson.get(pid) || []).filter(c => advanceOf(c) > 0.004)
+    .sort((a, b) => IX.tx.get(a.transaction_id).month.localeCompare(IX.tx.get(b.transaction_id).month) || a.id - b.id);
+}
+// Pay new charges from the person's advance (oldest advance first). Returns { total, n }.
+async function applyAdvances(charges) {
+  const rows = [], left = new Map(), today = todayISO(); let total = 0, n = 0;
+  const list = [...charges].sort((a, b) => (IX.tx.get(a.transaction_id)?.month || '').localeCompare(IX.tx.get(b.transaction_id)?.month || '') || a.id - b.id);
+  for (const c of list) {
+    if (isMe(c.person_id) || !(Number(c.amount) > 0)) continue;
+    let need = r2(Number(c.amount)); const start = need;
+    for (const s of advanceCharges(c.person_id)) {
+      const avail = left.has(s.id) ? left.get(s.id) : advanceOf(s); if (avail <= 0.004) continue;
+      const take = r2(Math.min(avail, need)); left.set(s.id, r2(avail - take)); need = r2(need - take); total = r2(total + take);
+      rows.push({ charge_id: s.id, amount: -take, received_on: today, note: 'Advance used' }, { charge_id: c.id, amount: take, received_on: today, note: 'Paid from advance' });
+      if (need <= 0.004) break;
+    }
+    if (need < start) n++;
+  }
+  if (rows.length) await ins('collections', rows);
+  return { total, n };
+}
 function chargeStatus(ch) {
   if (!live(ch)) return 'converted';
   if (isMe(ch.person_id)) return 'mine';
@@ -369,7 +394,8 @@ async function ensureInstallmentMonths() {
     category: 'LOAN', amount: r2(p.monthly_amount), installment_id: p.id, installment_no: no, source: 'auto' })));
   const rows = [];
   for (const t of txs) for (const c of splitFromShares(IX.inst.get(t.installment_id))) rows.push({ ...c, transaction_id: t.id });
-  await ins('charges', rows);
+  const made = await ins('charges', rows);
+  try { const a = await applyAdvances(made); if (a.total > 0.004) UI._advMsg = ` · ${peso(a.total)} paid from advances`; } catch (e) { console.error(e); }
   return txs.length;
 }
 
@@ -867,7 +893,7 @@ function personStats(pid) {
   const cs = (IX.chargesByPerson.get(pid) || []).filter(live);
   const open = cs.filter(c => balance(c) > 0.004);
   const cred = cs.filter(c => balance(c) < -0.004);
-  return { bal: sum(cs, balance), open: open.length, unpaid: sum(open, balance), credit: r2(-sum(cred, balance)), credits: cred.length,
+  return { bal: sum(cs, balance), open: open.length, unpaid: sum(open, balance), credit: r2(-sum(cred, balance)), credits: cred.length, adv: personAdvance(pid),
            oldest: open.map(c => IX.tx.get(c.transaction_id)?.month).sort()[0] };
 }
 // Charges where the person has a credit: a refund line, or paid more than the item
@@ -880,9 +906,13 @@ function viewPeople() {
     .sort((a, b) => (b.s.bal - a.s.bal) || a.p.name.localeCompare(b.p.name));
   const owing = ppl.filter(x => x.s.bal > 0.004), clear = ppl.filter(x => x.s.bal <= 0.004);
   const item = ({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow"><div class="b">${esc(p.name)} ${p.kind !== 'person' ? `<span class="pill">${p.kind}</span>` : ''}</div>
-    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.credits ? ` · credit ${peso(s.credit)}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
+    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.adv > 0.004 ? ` · <span style="color:var(--paid)">advance ${peso(s.adv)}</span>` : ''}${s.credit - s.adv > 0.004 ? ` · credit ${peso(r2(s.credit - s.adv))}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
   return `
     <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div></div><button class="btn sm" data-action="newPerson">+ Person</button></div>
+    ${(() => { const adv = ppl.filter(x => x.s.adv > 0.004).sort((a, b) => b.s.adv - a.s.adv), tot = sum(adv, x => x.s.adv);
+      return `<div class="card t-mint"><div class="small muted">Advances you're holding</div><div class="big">${peso(tot)}</div>
+        <div class="small muted" style="margin-top:2px">Money riders paid ahead. Keep this in your secure wallet. It goes down by itself as their next installment months come in.</div>
+        ${adv.length ? `<div class="list" style="margin-top:6px">${adv.map(({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow">${esc(p.name)}</div><div class="right b">${peso(s.adv)}</div></div>`).join('')}</div>` : ''}</div>`; })()}
     <div class="sec">Still owe you</div><div class="card list">${owing.map(item).join('') || '<div class="empty">Nobody owes you 🎉</div>'}</div>
     <div class="sec">All paid</div><div class="card list">${clear.map(item).join('') || '<div class="empty">—</div>'}</div>`;
 }
@@ -937,7 +967,7 @@ function allocate(pid, amount) {
 function allocPreview(pid, amount) {
   if (!amount || amount <= 0) return '';
   const { out, left } = allocate(pid, amount);
-  return `<div class="small" style="margin-top:6px">This will pay, oldest first:<br>${out.map(x => `• ${monthLabel(x.t.month)} ${esc(x.t.description)} — ${peso(x.take)}${x.take < balance(x.c) - 0.004 ? ' (part)' : ''}`).join('<br>')}${left > 0.004 ? `<br><span class="over">${peso(left)} is more than they owe and will not be saved.</span>` : ''}</div>`;
+  return `<div class="small" style="margin-top:6px">This will pay, oldest first:<br>${out.map(x => `• ${monthLabel(x.t.month)} ${esc(x.t.description)} — ${peso(x.take)}${x.take < balance(x.c) - 0.004 ? ' (part)' : ''}`).join('<br>')}${left > 0.004 ? `<br><b style="color:var(--paid)">${peso(left)} is more than they owe.</b> It will be saved as an <b>advance</b> and used on their next installment months.` : ''}</div>`;
 }
 function personBody(p, d) {
   const items = openCharges(p.id);
@@ -946,7 +976,8 @@ function personBody(p, d) {
   const s = personStats(p.id);
   return `
     <div class="card"><div class="small muted">${s.bal < -0.004 ? 'They have a credit of' : 'Still owes you'}</div><div class="big ${s.bal > 0.004 ? 'over' : ''}" style="${s.bal < -0.004 ? 'color:var(--paid)' : ''}">${peso(Math.abs(s.bal))}</div>
-      ${s.credits ? `<div class="small" style="margin-top:4px">= unpaid items <b>${peso(s.unpaid)}</b> − credits <b style="color:var(--paid)">${peso(s.credit)}</b></div>` : ''}</div>
+      ${s.credits ? `<div class="small" style="margin-top:4px">= unpaid items <b>${peso(s.unpaid)}</b> − credits <b style="color:var(--paid)">${peso(s.credit)}</b></div>` : ''}
+      ${s.adv > 0.004 ? `<div class="small" style="margin-top:4px">Advance (paid ahead): <b style="color:var(--paid)">${peso(s.adv)}</b> · used on their next installment months</div>` : ''}</div>
     ${p.kind !== 'me' ? `<div class="card"><div class="b">Record a payment</div>
       <div class="grid2"><label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="pay" value="${esc(d.pay)}"></label>
       <label class="f"><span>Date</span><input class="in" type="date" data-k="pay_on" value="${d.pay_on}"></label></div>
@@ -961,10 +992,10 @@ function personBody(p, d) {
       return `<div class="sec">Credits (${cr.length}) · ${peso(-sum(cr, x => balance(x.c)))}</div>
       <p class="small muted" style="margin:0 2px 6px">Money in their favour — a refund, or a payment bigger than the item. It's already taken off "Still owes you". If a credit is the bank cancelling a straight purchase that was <b>converted to installment</b>, tap 🔁 on it instead — then it's paired with the purchase and nobody owes either.</p>
       <div class="card list">${cr.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
-        <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `paid ${peso(received(c))} on ${peso(c.amount)}`}</div>
+        <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `<b>advance</b> · paid ${peso(received(c))} on ${peso(c.amount)}`}</div>
         ${Number(c.amount) < 0 ? `<button class="btn sm" style="margin-top:6px" data-action="openConvert" data-id="${t.id}">🔁 Converted to installment</button>` : ''}</div>
         <div class="right b" style="color:var(--paid)">${peso(-balance(c))}</div></div>`).join('')}</div>
-      ${items.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
+      ${items.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use advance / credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
     <div class="sec">Recent payments</div>
     <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
     <div class="sec">Edit</div>
@@ -1655,7 +1686,7 @@ const A = {
   addPay: el => openPay(+el.dataset.charge),
   savePay: async el => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); if (!amt) return toast('Add the amount');
     const ch = IX.charge.get(+el.dataset.charge), left = balance(ch);
-    if (amt > left + 0.004 && !(await ask(`That's ${peso(r2(amt - left))} more than what's left (${peso(left)}). The extra becomes a credit for ${personName(ch.person_id)}. Save anyway?`, 'Save'))) return;
+    if (amt > left + 0.004 && !(await ask(`That's ${peso(r2(amt - left))} more than what's left (${peso(left)}). The extra is saved as an advance for ${personName(ch.person_id)} and pays their next installment months automatically. Save?`, 'Save'))) return;
     try { await ins('collections', [{ charge_id: +el.dataset.charge, amount: amt, received_on: d.received_on || todayISO(), note: (d.note || '').trim() || null }]); closeSheet(); redrawTop(); render(); toast('Payment saved'); }
     catch (e) { toast('Could not save: ' + e.message); } },
   rmPay: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; await del('collections', +el.dataset.id); redrawTop(); render(); },
@@ -1682,9 +1713,18 @@ const A = {
     catch (e) { toast('Could not add: ' + e.message); } },
   savePerson: async el => { const d = SHEETS[SHEETS.length - 1].draft; try { const hh = document.querySelector('.overlay:last-child #hh'); await upd('people', +el.dataset.id, { name: d.name.trim(), kind: d.kind, ...(hh ? { household: hh.checked } : {}) }); SHEETS[SHEETS.length - 1].title = d.name.trim(); drawSheets(); render(); toast('Saved'); } catch (e) { toast('Could not save: ' + e.message); } },
   personPay: async el => { const pid = +el.dataset.id; const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.pay)); if (!(amt > 0)) return toast('Add the amount');
-    const { out } = allocate(pid, amt); if (!out.length) return toast('Nothing unpaid for this person');
-    try { await ins('collections', out.map(x => ({ charge_id: x.c.id, amount: x.take, received_on: d.pay_on || todayISO(), note: (d.pay_note || '').trim() || null })));
-      d.pay = ''; d.pay_note = ''; redrawTop(); render(); toast(`Payment saved on ${out.length} item${out.length === 1 ? '' : 's'}`); } catch (e) { toast('Could not save: ' + e.message); } },
+    const { out, left } = allocate(pid, amt), extra = left > 0.004 ? left : 0, note = (d.pay_note || '').trim();
+    let advTo = null;
+    if (extra) {
+      advTo = out.length ? out[out.length - 1].c : (IX.chargesByPerson.get(pid) || []).filter(c => live(c) && Number(c.amount) > 0)
+        .sort((a, b) => IX.tx.get(b.transaction_id).month.localeCompare(IX.tx.get(a.transaction_id).month) || b.id - a.id)[0];
+      if (!advTo) return toast('Add an item for this person first, then record the advance');
+      if (!(await ask(`${peso(extra)} is more than ${personName(pid)} owes. Save it as an advance? It will pay their next installment months automatically. Keep this money in your secure wallet until then.`, 'Save advance'))) return;
+    }
+    const rows = out.map(x => ({ charge_id: x.c.id, amount: x.take, received_on: d.pay_on || todayISO(), note: note || null }));
+    if (extra) rows.push({ charge_id: advTo.id, amount: extra, received_on: d.pay_on || todayISO(), note: 'Advance' + (note ? ' · ' + note : '') });
+    try { await ins('collections', rows);
+      d.pay = ''; d.pay_note = ''; redrawTop(); render(); toast(extra ? `Saved · ${peso(extra)} kept as advance` : `Payment saved on ${out.length} item${out.length === 1 ? '' : 's'}`); } catch (e) { toast('Could not save: ' + e.message); } },
   openCard: el => openCard(el.dataset.id ? +el.dataset.id : null),
   saveCard: async () => { const d = SHEETS[SHEETS.length - 1].draft;
     const row = { code: d.code.trim().toUpperCase(), bank: d.bank.trim() || null, last4: d.last4.trim() || null, due_day: num(d.due_day), cutoff_day: num(d.cutoff_day), active: String(d.active) === 'true' };
@@ -1781,7 +1821,7 @@ async function loadData() {
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
     const made = await ensureInstallmentMonths();
     await ensureMoneyDefaults(); await ensureRecurring();
-    render(); if (made) toast(`${made} installment month${made === 1 ? '' : 's'} added`);
+    render(); if (made) toast(`${made} installment month${made === 1 ? '' : 's'} added${UI._advMsg || ''}`); UI._advMsg = '';
   } catch (e) {
     console.error(e);
     $('#root').innerHTML = `<div class="center"><div class="loginbox card"><div class="b">Could not load your data</div><div class="err">${esc(e.message || e)}</div><button class="btn block" style="margin-top:12px" onclick="location.reload()">Try again</button></div></div>`;
