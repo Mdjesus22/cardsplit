@@ -942,7 +942,8 @@ function entryItem(e) {
     <div class="right b" style="color:${e.kind === 'income' ? 'var(--paid)' : 'inherit'}">${e.kind === 'income' ? '+' : '−'}${peso(e.amount)}</div></div>`;
 }
 const catsOf = kind => S.categories.filter(c => c.kind === kind && c.active).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
-const hhOpts = sel => householdPeople().map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+const hhOpts = sel => householdPeople().map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('') + '<option value="__new">＋ New person…</option>';
+const HH_HINT = `<div class="small muted" style="margin:2px 2px 6px">Only you and people marked <b>Household</b> show here. Already in People (e.g. as a rider)? Open them on People and tick <b>Household (partner)</b>.</div>`;
 function openEntry(id, kind) {
   const e = id ? S.entries.find(x => x.id === id) : null;
   const k = e ? e.kind : (kind || 'expense');
@@ -965,10 +966,11 @@ function entryBody(d) {
     <div class="chips">${catsOf(d.kind).map(c => chip('category_id', c.id, c.name, c.id === d.category_id)).join('')}<button class="chip" style="border:0;cursor:pointer;padding:6px 10px;font-size:13px" data-action="newCategory" data-kind="${d.kind}">＋ New</button></div>
     <label class="f"><span>What for (optional)</span><input class="in" data-k="description" value="${esc(d.description)}" placeholder="${d.kind === 'income' ? 'e.g. Oct 3 salary' : 'e.g. Pedia check-up'}"></label>
     <div class="grid2">
-      <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num>${hhOpts(d.person_id)}</select></label>
+      <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num data-hh>${hhOpts(d.person_id)}</select></label>
       <label class="f"><span>${d.kind === 'income' ? 'Received via' : 'Paid with'}</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
     </div>
     ${d.kind === 'expense' ? `<div class="small muted" style="margin:4px 2px">Was this expected?</div><div class="chips">${chip('planned', '1', 'Planned', d.planned)}${chip('planned', '0', 'Unplanned / surprise', !d.planned)}</div>` : ''}
+    ${HH_HINT}
     <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
     <p class="small muted">Don't add card bill payments here — your card purchases are already counted from the Cards tab.</p>`;
 }
@@ -999,7 +1001,7 @@ function multiBody(d) {
   return `
     <div class="seg" style="margin-top:12px">${['expense', 'income'].map(k => `<button class="${d.kind === k ? 'on' : ''}" data-action="multiKind" data-v="${k}">${k === 'income' ? 'Income' : 'Expense'}</button>`).join('')}</div>
     <div class="grid2">
-      <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num>${hhOpts(d.person_id)}</select></label>
+      <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num data-hh>${hhOpts(d.person_id)}</select></label>
       <label class="f"><span>${d.kind === 'income' ? 'Received via' : 'Paid with'}</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
     </div>
     ${d.kind === 'expense' ? `<label class="small row" style="gap:6px;margin:4px 2px"><input type="checkbox" id="mplan" ${d.planned ? '' : 'checked'}> All of these were unplanned / surprise</label>` : ''}
@@ -1040,7 +1042,7 @@ function openRec(id) {
         <label class="f"><span>Amount (₱) each time</span><input class="in" type="number" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
         <label class="f"><span>Days of the month</span><input class="in" data-k="days" value="${esc(d.days)}" placeholder="3, 18"></label>
         <label class="f"><span>Category</span><select class="in" data-k="category_id" data-num>${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === d.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
-        <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num>${hhOpts(d.person_id)}</select></label>
+        <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num data-hh>${hhOpts(d.person_id)}</select></label>
         <label class="f"><span>Via</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
         <label class="f"><span>Start from</span><input class="in" type="date" data-k="start_date" value="${esc(d.start_date)}"></label>
       </div>
@@ -1436,7 +1438,8 @@ const A = {
   newPerson: () => openNewPerson(),
   addPerson: async () => { const d = SHEETS[SHEETS.length - 1].draft; const name = d.name.trim(); if (!name) return toast('Add a name');
     if (S.people.some(p => p.name.toLowerCase() === name.toLowerCase())) return toast('That name already exists');
-    try { const [p] = await ins('people', [{ name, kind: d.kind }]); const cb = SHEETS[SHEETS.length - 1].onAdded; closeSheet(); if (cb) cb(p); else render(); toast(`Added ${name}`); }
+    const nphh = document.querySelector('.overlay:last-child #nphh');
+    try { const [p] = await ins('people', [{ name, kind: d.kind, ...(nphh ? { household: nphh.checked } : {}) }]); const cb = SHEETS[SHEETS.length - 1].onAdded; closeSheet(); if (cb) cb(p); else render(); toast(`Added ${name}`); }
     catch (e) { toast('Could not add: ' + e.message); } },
   savePerson: async el => { const d = SHEETS[SHEETS.length - 1].draft; try { const hh = document.querySelector('.overlay:last-child #hh'); await upd('people', +el.dataset.id, { name: d.name.trim(), kind: d.kind, ...(hh ? { household: hh.checked } : {}) }); SHEETS[SHEETS.length - 1].title = d.name.trim(); drawSheets(); render(); toast('Saved'); } catch (e) { toast('Could not save: ' + e.message); } },
   personPay: async el => { const pid = +el.dataset.id; const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.pay)); if (!(amt > 0)) return toast('Add the amount');
@@ -1466,11 +1469,12 @@ const A = {
   },
 };
 document.addEventListener('click', e => { const a = e.target.closest('[data-action]'); if (!a) return; e.preventDefault(); A[a.dataset.action]?.(a, e); });
-function openNewPerson(onAdded) {
-  const d = { name: '', kind: 'person' };
+function openNewPerson(onAdded, opts = {}) {
+  const d = { name: '', kind: 'person', household: !!opts.household };
   openSheet({ title: 'New person', draft: d, onAdded, mount: o => { bindDraft(o, d); setTimeout(() => o.querySelector('[data-k=name]')?.focus(), 50); },
     body: () => `<label class="f"><span>Name</span><input class="in" data-k="name" placeholder="e.g. Tita Angie" autocomplete="off"></label>
-      <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket'].map(k => `<option>${k}</option>`).join('')}</select></label>`,
+      <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket'].map(k => `<option>${k}</option>`).join('')}</select></label>
+      ${S._money ? `<label class="small row" style="gap:8px"><input type="checkbox" id="nphh" ${d.household ? 'checked' : ''} style="width:20px;height:20px"> Household (partner) — counts in Money as "ours"</label>` : ''}`,
     foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="addPerson">Add</button></div>` });
 }
 function pickNewPerson(e) {
@@ -1480,15 +1484,17 @@ function pickNewPerson(e) {
   const owner = SHEETS[SHEETS.length - 1], d = owner?.draft;
   const li = el.dataset.li, ci = el.dataset.ci, si = el.dataset.si, isAll = el.id === 'setall';
   if (li != null) el.value = String(d.st.lines[+li].person); else if (ci != null) el.value = String(d.charges[+ci].person_id);
-  else if (si != null) el.value = String(d.shares[+si].person_id); else el.value = '';
+  else if (si != null) el.value = String(d.shares[+si].person_id); else if (el.dataset.k && d && el.dataset.k in d) el.value = String(d[el.dataset.k] ?? ''); else el.value = '';
+  const k = el.dataset.k;
   openNewPerson(p => {
     if (!d) return render();
     if (li != null) d.st.lines[+li].person = p.id;
     else if (isAll) d.st.lines.forEach(x => { if (x.on && (x.kind === 'new' || x.kind === 'newplan')) x.person = p.id; });
     else if (ci != null) d.charges[+ci].person_id = p.id;
     else if (si != null) d.shares[+si].person_id = p.id;
+    else if (k) d[k] = p.id;
     redrawTop(); render();
-  });
+  }, { household: el.hasAttribute('data-hh') });
 }
 document.addEventListener('input', pickNewPerson, true);
 document.addEventListener('change', pickNewPerson, true);
