@@ -118,6 +118,18 @@ Both SQL files only **add** things. They never drop or delete anything. If you r
 The PDF is read on your own phone or computer. It is never uploaded anywhere.
 If the app says **"No transactions found"**, tap **Copy the PDF text for Claude** and send it to me. Card numbers are hidden automatically.
 
+## Part F — Money tab (income vs expenses)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/3-money.sql` and click **Run**. It only adds the new tables.
+2. Reload the app. The **Money** tab sets up default categories by itself.
+3. On **People**, open your partner, tick **Household (partner)**, then tap **Save name**. Their income and their share of card purchases now count as "ours".
+4. Add your salary as **Recurring** (Money → Recurring → e.g. days `3, 18`), so it's added automatically each payday.
+
+What counts:
+- **Expenses** = your household's share of card purchases (by purchase date) + cash/GCash/debit expenses you add.
+- **Not counted:** riders' shares, paying your card bill (already counted as purchases), and money riders pay back to you.
+- Tag surprise spending as **Unplanned** and filter Planned/Unplanned at the top of Money.
+
 ---
 
 ## Good to know

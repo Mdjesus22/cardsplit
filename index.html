@@ -12,6 +12,7 @@
   --brand:#0f766e; --brand-ink:#ffffff; --brand-soft:#ccfbf1;
   --paid:#15803d; --paid-bg:#dcfce7; --part:#b45309; --part-bg:#fef3c7; --unpaid:#b91c1c; --unpaid-bg:#fee2e2;
   --mine:#4b5563; --mine-bg:#e5e7eb; --shadow:0 1px 2px rgba(0,0,0,.06),0 2px 8px rgba(0,0,0,.05);
+  --s1:#2a78d6; --s2:#eb6834; --track:#eef0f3;
   --r:14px;
 }
 @media (prefers-color-scheme: dark){
@@ -20,6 +21,7 @@
     --brand:#2dd4bf; --brand-ink:#04201d; --brand-soft:#134e4a;
     --paid:#4ade80; --paid-bg:#14341f; --part:#fbbf24; --part-bg:#3b2c0b; --unpaid:#f87171; --unpaid-bg:#3a1414;
     --mine:#cbd5e1; --mine-bg:#2a3340; --shadow:none;
+    --s1:#3987e5; --s2:#d95926; --track:#1f2833;
   }
 }
 *{box-sizing:border-box}
@@ -115,6 +117,17 @@ details>summary::-webkit-details-marker{display:none}
 .err{color:var(--unpaid);font-size:13px;margin-top:8px}
 .linkish{background:none;border:0;color:var(--brand);cursor:pointer;padding:0;font-weight:600}
 .over{color:var(--unpaid);font-weight:600}
+.hb{display:block;width:100%;border:0;background:transparent;padding:6px 0;cursor:pointer;text-align:left}
+.hb-l{display:flex;justify-content:space-between;gap:10px;font-size:13.5px;margin-bottom:4px}
+.hb-t{display:block;height:10px;border-radius:999px;background:var(--track);overflow:hidden}
+.hb-t>i{display:block;height:100%;background:var(--s1);border-radius:0 4px 4px 0}
+.trend{width:100%;height:auto;display:block}
+.trend .b-inc{fill:var(--s1)} .trend .b-exp{fill:var(--s2)}
+.trend .ax{fill:var(--muted);font-size:11px} .trend .axl{stroke:var(--line);stroke-width:1}
+.trend .tg{cursor:pointer} .trend .tg.on rect{fill:var(--track)}
+.legend{display:flex;gap:14px;font-size:12.5px;color:var(--muted);margin-bottom:4px}
+.legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+.legend .sw.inc{background:var(--s1)} .legend .sw.exp{background:var(--s2)}
 </style>
 </head>
 <body>
@@ -130,14 +143,17 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.1';
+const VERSION = '1.2';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
-const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections'];
+const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
+const OPT_TABLES = ['categories','recurring','entries'];   // Money tab — created by 3-money.sql
+const SETNULL = { recurring:[['entries','recurring_id']] };
 const CASCADE = { transactions:[['charges','transaction_id']], charges:[['collections','charge_id']],
                   installments:[['installment_shares','installment_id'],['transactions','installment_id']] };
 const DEFAULTS = { cards:{active:true}, people:{kind:'person',active:true}, statements:{paid_to_bank:false},
-                   installments:{status:'active'}, transactions:{source:'manual'} };
+                   installments:{status:'active'}, transactions:{source:'manual'},
+                   categories:{active:true, sort:0}, entries:{planned:true}, recurring:{active:true} };
 
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
@@ -165,6 +181,7 @@ function cascadeLocal(store, t, id) {
   for (const [child, fk] of (CASCADE[t] || [])) {
     for (const r of store[child].filter(r => r[fk] === id)) cascadeLocal(store, child, r.id);
   }
+  for (const [child, fk] of (SETNULL[t] || [])) for (const r of (store[child] || [])) if (r[fk] === id) r[fk] = null;
 }
 function makeDemoDB(seed) {
   const data = structuredClone(seed); const next = {};
@@ -185,13 +202,15 @@ function makeSupabaseDB(sb) {
     async loadAll() {
       const out = {};
       await Promise.all(TABLES.map(async t => {
-        let rows = [], from = 0;
-        for (;;) {
-          const { data, error } = await sb.from(t).select('*').order('id').range(from, from + 999);
-          if (error) throw error;
-          rows = rows.concat(data); if (data.length < 1000) break; from += 1000;
-        }
-        out[t] = rows;
+        try {
+          let rows = [], from = 0;
+          for (;;) {
+            const { data, error } = await sb.from(t).select('*').order('id').range(from, from + 999);
+            if (error) throw error;
+            rows = rows.concat(data); if (data.length < 1000) break; from += 1000;
+          }
+          out[t] = rows;
+        } catch (e) { if (OPT_TABLES.includes(t)) out[t] = null; else throw e; }   // Money tables not created yet
       }));
       return out;
     },
@@ -205,6 +224,7 @@ let sb = null, db = null;
 let S = Object.fromEntries(TABLES.map(t => [t, []]));
 let IX = {};
 const UI = { view: 'home', month: addMonths(monthOf(todayISO()), -1), instFilter: 'active',
+             mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null,
              f: { scope: 'month', card: '', person: '', status: '', q: '' } };
 
 // local mutations (DB first, then local copy)
@@ -225,6 +245,7 @@ function reindex() {
   IX.txByInst = groupBy(S.transactions.filter(t => t.installment_id), 'installment_id');
   IX.stmt = new Map(S.statements.map(s => [s.card_id + '|' + s.month, s]));
   IX.me = (S.people.find(p => p.kind === 'me') || {}).id;
+  IX.cat = new Map((S.categories || []).map(r => [r.id, r]));
 }
 const received = ch => sum(IX.collByCharge.get(ch.id) || [], c => c.amount);
 const balance = ch => r2(Number(ch.amount) - received(ch));
@@ -333,17 +354,18 @@ function render() {
     <header class="top">
       <button class="iconbtn" data-action="menu" aria-label="Menu">☰</button>
       <h1>CardSplit${DEMO ? ' <span class="pill amber">demo</span>' : ''}</h1>
-      ${UI.view === 'people' ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">‹</button><span>${monthLabel(UI.month)}</span><button data-action="nextMonth" aria-label="Next month">›</button></div>`}
+      ${UI.view === 'people' ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">‹</button><span>${monthLabel(UI.view === 'money' ? UI.mMonth : UI.month)}</span><button data-action="nextMonth" aria-label="Next month">›</button></div>`}
     </header>
-    <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, people: viewPeople })[UI.view]()}</main>
+    <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, money: viewMoney, people: viewPeople })[UI.view]()}</main>
     <nav class="bottom"><div class="in">
-      ${navBtn('home', '⌂', 'Home')}${navBtn('tx', '≡', 'Transactions')}
-      <button class="add" data-action="newTx" aria-label="Add transaction"><span class="ic">+</span><span>Add</span></button>
-      ${navBtn('inst', '◷', 'Installments')}${navBtn('people', '☺', 'People')}
+      ${navBtn('home', '⌂', 'Home')}${navBtn('tx', '💳', 'Cards')}
+      <button class="add" data-action="addMenu" aria-label="Add"><span class="ic">+</span><span>Add</span></button>
+      ${navBtn('money', '₱', 'Money')}${navBtn('people', '☺', 'People')}
     </div></nav>`;
   const q = $('#fq'); if (q && UI._focusQ) { q.focus(); q.setSelectionRange(q.value.length, q.value.length); UI._focusQ = false; }
 }
-const navBtn = (v, ic, label) => `<button class="${UI.view === v ? 'on' : ''}" data-action="go" data-view="${v}"><span class="ic">${ic}</span><span>${label}</span></button>`;
+const cardsSeg = () => `<div class="seg" style="margin-top:6px"><button class="${UI.view === 'tx' ? 'on' : ''}" data-action="go" data-view="tx">Transactions</button><button class="${UI.view === 'inst' ? 'on' : ''}" data-action="go" data-view="inst">Installments</button></div>`;
+const navBtn = (v, ic, label) => `<button class="${UI.view === v || (v === 'tx' && UI.view === 'inst') ? 'on' : ''}" data-action="go" data-view="${v}"><span class="ic">${ic}</span><span>${label}</span></button>`;
 
 /* ---------------- HOME ---------------- */
 function viewHome() {
@@ -412,7 +434,7 @@ function txItem(t) {
 function viewTx() {
   const f = UI.f, list = filteredTx();
   const opt = (v, l, cur) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`;
-  return `
+  return `${cardsSeg()}
     <div class="seg" style="margin-top:6px">
       <button class="${f.scope === 'month' ? 'on' : ''}" data-action="txScope" data-v="month">${monthLabel(UI.month)}</button>
       <button class="${f.scope === 'all' ? 'on' : ''}" data-action="txScope" data-v="all">All months</button></div>
@@ -580,7 +602,7 @@ function viewInst() {
     .sort((a, b) => (b.i.left - a.i.left) || b.p.first_month.localeCompare(a.p.first_month));
   const act = all.filter(x => x.i.status === 'active');
   const segBtn = (v, l) => `<button class="${f === v ? 'on' : ''}" data-action="instFilter" data-v="${v}">${l}</button>`;
-  return `
+  return `${cardsSeg()}
     <div class="seg" style="margin-top:6px">${segBtn('active', `Ongoing (${counts.active})`)}${segBtn('done', `Done (${counts.done})`)}${segBtn('ended', `Ended early (${counts.ended})`)}${segBtn('all', 'All')}</div>
     <div class="tiles" style="margin-top:10px">
       <div class="tile"><div class="lbl">Left to pay (ongoing)</div><div class="val">${peso(sum(act, x => x.i.remaining))}</div></div>
@@ -706,7 +728,7 @@ function viewPeople() {
 }
 function openPerson(pid) {
   const p = IX.person.get(pid);
-  const d = { name: p.name, kind: p.kind, active: p.active, pay: '', pay_on: todayISO(), pay_note: '' };
+  const d = { name: p.name, kind: p.kind, active: p.active, household: !!p.household, pay: '', pay_on: todayISO(), pay_note: '' };
   const sheet = { title: p.name, draft: d, body: () => personBody(p, d), mount: o => {
       bindDraft(o, d);
       const pv = () => { const el = o.querySelector('#alloc'); if (el) el.innerHTML = allocPreview(pid, num(d.pay)); };
@@ -751,7 +773,8 @@ function personBody(p, d) {
     <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
     <div class="sec">Edit</div>
     <div class="card"><div class="grid2"><label class="f"><span>Name</span><input class="in" data-k="name" value="${esc(d.name)}"></label>
-      <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket', 'me'].map(k => `<option ${k === d.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div></div>`;
+      <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket', 'me'].map(k => `<option ${k === d.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div>
+      ${'household' in p && p.kind !== 'me' ? `<label class="small row" style="gap:8px;margin-top:6px"><input type="checkbox" id="hh" ${d.household ? 'checked' : ''} style="width:20px;height:20px"> Household (partner) — their income and card share count as "ours" in Money</label>` : ''}</div>`;
 }
 
 /* ---------------- cards (menu) ---------------- */
@@ -771,6 +794,314 @@ function openCard(id) {
       <label class="f"><span>Still using?</span><select class="in" data-k="active"><option value="true" ${d.active ? 'selected' : ''}>Yes</option><option value="false" ${!d.active ? 'selected' : ''}>No</option></select></label></div>`,
     foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveCard">Save</button></div>`,
     mount: o => bindDraft(o, d) });
+}
+
+/* ---------------- MONEY: household income vs expenses ---------------- */
+const DEFAULT_CATS = {
+  income: ['Salary', '13th month & bonus', 'Side business', 'Other income'],
+  expense: ['Food & groceries', 'Eating out', 'Utilities', 'Internet & phone', 'Transport & gas', 'Health & medicine', 'Baby',
+            'Family support', 'House & rent', 'Shopping', 'Subscriptions', 'Loans & installments', 'Card fees & interest',
+            'Gifts & occasions', 'Others'],
+};
+const METHODS = ['Cash', 'GCash', 'Debit', 'Bank transfer', 'Other'];
+const isHousehold = pid => { const p = IX.person.get(pid); return !!p && (p.kind === 'me' || !!p.household); };
+const householdPeople = () => S.people.filter(p => p.kind === 'me' || p.household);
+const catName = id => IX.cat?.get(id)?.name || 'Others';
+const addDays = (iso, k) => { const d = new Date(iso + 'T00:00'); d.setDate(d.getDate() + k); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+
+// Card purchases → Money expense category (card categories are free text, PDF lines have none)
+const CARD_CAT_RULES = [
+  [/^LOAN|INSTALL/, 'Loans & installments'], [/FASTFOOD|RESTAU/, 'Eating out'], [/GROCER/, 'Food & groceries'],
+  [/MED|HEALTH/, 'Health & medicine'], [/UTILIT/, 'Utilities'], [/INTERNET/, 'Internet & phone'], [/GAS|TRANSPO/, 'Transport & gas'],
+  [/SUBS|PLATFORM/, 'Subscriptions'], [/SHOPPING|DEPARTMENT|GADGET|SUPPLIES|ONLINE|BEAUTY/, 'Shopping'], [/CARD FEE|^CC$/, 'Card fees & interest'],
+];
+const DESC_RULES = [
+  [/FINANCE CHARGE|LATE (PAYMENT )?(CHARGE|FEE)|INTEREST|ANNUAL FEE|MEMBERSHIP FEE|PROCESSING FEE|CASH ADVANCE (FEE|PF)/, 'Card fees & interest'],
+  [/MERALCO|MAYNILAD|MANILA WATER|WATER DISTRICT/, 'Utilities'], [/CONVERGE|PLDT|GLOBE|SMART|SKY ?CABLE|DITO/, 'Internet & phone'],
+  [/JOLLIBEE|MCDO|MC ?DONALD|GADC|FOODPANDA|GRABFOOD|STARBUCKS|MANG INASAL|CHOWKING|GREENWICH|KFC|BURGER/, 'Eating out'],
+  [/MERCURY|DRUG|WATSONS|CLINIC|HOSPITAL|PHARMA|MEDICAL/, 'Health & medicine'],
+  [/PETRON|SHELL|CALTEX|SEAOIL|CLEANFUEL|CLEAN FUEL|GRAB|ANGKAS|JOYRIDE|AUTOSWEEP|EASYTRIP/, 'Transport & gas'],
+  [/PUREGOLD|SUPERMARKET|SAVEMORE|WALTERMART|DALI|ALFAMART|7.?ELEVEN|ALL DAY|EVER |S&R|LANDMARK/, 'Food & groceries'],
+  [/NETFLIX|SPOTIFY|YOUTUBE|DISNEY|APPLE\.COM|GOOGLE|VIU|HBO/, 'Subscriptions'],
+  [/SHOPEE|LAZADA|LZD|TIKTOK|SM STORE|ROBINSONS DEPT|UNIQLO/, 'Shopping'],
+];
+function cardCategory(t) {
+  const names = new Set(S.categories.filter(c => c.kind === 'expense').map(c => c.name));
+  if (t.category && names.has(t.category)) return t.category;
+  if (t.installment_id) return 'Loans & installments';
+  const c = (t.category || '').toUpperCase().trim();
+  for (const [re, n] of CARD_CAT_RULES) if (c && re.test(c)) return n;
+  const d = (t.description || '').toUpperCase();
+  for (const [re, n] of DESC_RULES) if (re.test(d)) return n;
+  return 'Others';
+}
+function moneyPeriod() {
+  const m = UI.mMonth, end = addMonths(m, 1);
+  if (UI.mHalf === 1) return { from: m, to: m.slice(0, 8) + '16', label: `${MON[+m.slice(5, 7) - 1]} 1–15` };
+  if (UI.mHalf === 2) return { from: m.slice(0, 8) + '16', to: end, label: `${MON[+m.slice(5, 7) - 1]} 16–end` };
+  return { from: m, to: end, label: monthLabel(m) };
+}
+// Everything that counts, for a date range [from, to)
+function moneyItems(from, to, opts = {}) {
+  const inR = d => d >= from && d < to;
+  const plan = opts.planned ?? UI.mPlanned;
+  const items = [];
+  for (const e of S.entries) {
+    if (!inR(e.entry_date)) continue;
+    if (e.kind === 'expense' && plan === 'planned' && !e.planned) continue;      // filter applies to expenses only
+    if (e.kind === 'expense' && plan === 'unplanned' && e.planned) continue;
+    items.push({ kind: e.kind, date: e.entry_date, amount: Number(e.amount), cat: catName(e.category_id), desc: e.description || catName(e.category_id), src: 'entry', id: e.id, planned: e.planned, person_id: e.person_id });
+  }
+  if ((opts.cards ?? UI.mCards) && plan === 'all') {
+    for (const c of S.charges) {
+      if (!isHousehold(c.person_id)) continue;
+      const t = IX.tx.get(c.transaction_id); if (!t) continue;
+      const d = t.txn_date || t.month; if (!inR(d)) continue;
+      items.push({ kind: 'expense', date: d, amount: Number(c.amount), cat: cardCategory(t), desc: t.description, src: 'card', id: t.id, person_id: c.person_id });
+    }
+  }
+  return items;
+}
+function byCat(items) {
+  const m = new Map(); for (const x of items) m.set(x.cat, r2((m.get(x.cat) || 0) + x.amount));
+  return [...m].map(([cat, amt]) => ({ cat, amt })).filter(x => x.amt > 0.004).sort((a, b) => b.amt - a.amt);
+}
+function hbars(rows, total, kind) {
+  if (!rows.length) return '<div class="empty">Nothing yet for this period.</div>';
+  const top = rows.slice(0, 7), rest = rows.slice(7);
+  if (rest.length) top.push({ cat: `Others (${rest.length})`, amt: sum(rest, x => x.amt), others: rest.map(x => x.cat) });
+  const max = Math.max(...top.map(x => x.amt));
+  return top.map(x => `<button class="hb" data-action="moneyCat" data-kind="${kind}" data-cat="${esc(x.others ? x.others.join('|') : x.cat)}" title="${esc(x.cat)}: ${peso(x.amt)}">
+      <span class="hb-l"><span class="ell">${esc(x.cat)}</span><span><b>${peso(x.amt)}</b> <span class="muted">${total ? Math.round(x.amt / total * 100) : 0}%</span></span></span>
+      <span class="hb-t"><i style="width:${Math.max(2, x.amt / max * 100)}%"></i></span></button>`).join('');
+}
+function trendChart() {
+  const months = [...Array(6)].map((_, i) => addMonths(UI.mMonth, i - 5));
+  const data = months.map(m => { const it = moneyItems(m, addMonths(m, 1), { planned: 'all' });
+    return { m, inc: sum(it.filter(x => x.kind === 'income'), x => x.amount), exp: Math.max(0, sum(it.filter(x => x.kind === 'expense'), x => x.amount)) }; });
+  const max = Math.max(1, ...data.flatMap(d => [d.inc, d.exp]));
+  const W = 340, H = 150, base = 120, top = 12, gw = W / 6, bw = 15;
+  const y = v => base - (v / max) * (base - top);
+  const bar = (x, v, cls) => { const yy = y(v), h = base - yy; if (h < 0.5) return ''; const r = Math.min(4, h, bw / 2);
+    return `<path class="${cls}" d="M${x},${base} V${yy + r} Q${x},${yy} ${x + r},${yy} H${x + bw - r} Q${x + bw},${yy} ${x + bw},${yy + r} V${base} Z"/>`; };
+  const sel = UI.mSel || UI.mMonth;
+  const groups = data.map((d, i) => { const cx = i * gw + gw / 2;
+    return `<g class="tg${d.m === sel ? ' on' : ''}" data-action="moneyPick" data-m="${d.m}"><rect x="${i * gw}" y="0" width="${gw}" height="${H}" fill="transparent"/>
+      <title>${monthLabel(d.m)} — Income ${peso(d.inc)} · Expenses ${peso(d.exp)} · Left ${peso(d.inc - d.exp)}</title>
+      ${bar(cx - bw - 1, d.inc, 'b-inc')}${bar(cx + 1, d.exp, 'b-exp')}
+      <text x="${cx}" y="${base + 16}" text-anchor="middle" class="ax">${MON[+d.m.slice(5, 7) - 1]}</text></g>`; }).join('');
+  const s = data.find(d => d.m === sel) || data[5];
+  const left = r2(s.inc - s.exp);
+  return `<div class="legend"><span><i class="sw inc"></i>Income</span><span><i class="sw exp"></i>Expenses</span></div>
+    <svg viewBox="0 0 ${W} ${H}" class="trend" role="img" aria-label="Income and expenses, last 6 months">
+      <line x1="0" x2="${W}" y1="${base}" y2="${base}" class="axl"/>${groups}</svg>
+    <div class="small" style="margin-top:4px"><b>${monthLabel(s.m)}</b> · Income ${peso(s.inc)} · Expenses ${peso(s.exp)} · <span class="${left < 0 ? 'over' : ''}">Left ${peso(left)}</span>
+      <span class="muted">— tap a month to see it</span></div>`;
+}
+function viewMoney() {
+  if (!S._money) return `<div class="card" style="margin-top:10px"><div class="b">One more setup step</div>
+    <p class="small">Run <b>database/3-money.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data.</p></div>`;
+  const p = moneyPeriod();
+  const items = moneyItems(p.from, p.to);
+  const inc = items.filter(x => x.kind === 'income'), exp = items.filter(x => x.kind === 'expense');
+  const tInc = sum(inc, x => x.amount), tExp = sum(exp, x => x.amount), left = r2(tInc - tExp);
+  const cardExp = exp.filter(x => x.src === 'card');
+  const entries = S.entries.filter(e => e.entry_date >= p.from && e.entry_date < p.to && (e.kind === 'income' || UI.mPlanned === 'all' || (UI.mPlanned === 'planned') === !!e.planned))
+    .sort((a, b) => b.entry_date.localeCompare(a.entry_date) || b.id - a.id);
+  const seg = (k, v, l, cur) => `<button class="${cur === v ? 'on' : ''}" data-action="${k}" data-v="${v}">${l}</button>`;
+  return `
+    <div class="seg" style="margin-top:6px">${seg('mHalf', 0, 'Whole month', UI.mHalf)}${seg('mHalf', 1, '1–15', UI.mHalf)}${seg('mHalf', 2, '16–end', UI.mHalf)}</div>
+    <div class="tiles" style="margin-top:10px">
+      <div class="tile"><div class="lbl">Income</div><div class="val">${peso(tInc)}</div></div>
+      <div class="tile"><div class="lbl">Expenses</div><div class="val">${peso(tExp)}</div></div>
+      <div class="tile"><div class="lbl">Left</div><div class="val ${left < 0 ? 'over' : ''}">${peso(left)}</div></div>
+      <div class="tile"><div class="lbl">Saved</div><div class="val">${tInc > 0 ? Math.round(left / tInc * 100) + '%' : '—'}</div></div>
+    </div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      <button class="btn sm pri" data-action="newEntry" data-kind="expense">＋ Expense</button>
+      <button class="btn sm pri" data-action="newEntry" data-kind="income">＋ Income</button>
+      <button class="btn sm" data-action="multiEntry">Add several</button>
+      <button class="btn sm" data-action="openRecurring">Recurring (${S.recurring.filter(r => r.active).length})</button>
+    </div>
+    <div class="seg" style="margin-top:10px">${seg('mPlanned', 'all', 'All', UI.mPlanned)}${seg('mPlanned', 'planned', 'Planned', UI.mPlanned)}${seg('mPlanned', 'unplanned', 'Unplanned', UI.mPlanned)}</div>
+    <label class="small row" style="margin:8px 2px;gap:6px"><input type="checkbox" data-action="mCards" ${UI.mCards ? 'checked' : ''} ${UI.mPlanned !== 'all' ? 'disabled' : ''}>
+      Include household card spending${UI.mPlanned !== 'all' ? ' (only in "All")' : cardExp.length ? ` · ${cardExp.length} items ${peso(sum(cardExp, x => x.amount))}` : ''}</label>
+    <div class="sec">Where the money went · ${esc(p.label)}</div>
+    <div class="card">${hbars(byCat(exp), tExp, 'expense')}</div>
+    <div class="sec">Income vs expenses · last 6 months</div>
+    <div class="card">${trendChart()}</div>
+    <div class="sec">Where the money came from</div>
+    <div class="card">${hbars(byCat(inc), tInc, 'income')}</div>
+    <div class="sec">Entries · ${esc(p.label)} (${entries.length})</div>
+    <div class="card list">${entries.map(e => entryItem(e)).join('') || '<div class="empty">No entries yet. Tap ＋ Expense or ＋ Income.</div>'}</div>`;
+}
+function entryItem(e) {
+  const who = e.person_id ? personName(e.person_id) : '';
+  return `<div class="item" data-action="openEntry" data-id="${e.id}"><div class="grow"><div class="b ell">${esc(e.description || catName(e.category_id))}</div>
+    <div class="small muted">${dateLabel(e.entry_date)} · ${esc(catName(e.category_id))}${who ? ' · ' + esc(who) : ''}${e.method ? ' · ' + esc(e.method) : ''}${e.kind === 'expense' && !e.planned ? ' · <span class="pill amber">Unplanned</span>' : ''}${e.recurring_id ? ' · ↻' : ''}</div></div>
+    <div class="right b" style="color:${e.kind === 'income' ? 'var(--paid)' : 'inherit'}">${e.kind === 'income' ? '+' : '−'}${peso(e.amount)}</div></div>`;
+}
+const catsOf = kind => S.categories.filter(c => c.kind === kind && c.active).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
+const hhOpts = sel => householdPeople().map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
+function openEntry(id, kind) {
+  const e = id ? S.entries.find(x => x.id === id) : null;
+  const k = e ? e.kind : (kind || 'expense');
+  const d = e ? { ...e, amount: String(e.amount), description: e.description || '', note: e.note || '', method: e.method || '' }
+              : { id: null, kind: k, amount: '', entry_date: todayISO(), category_id: catsOf(k)[0]?.id, person_id: IX.me, method: k === 'income' ? 'Bank transfer' : 'Cash', planned: true, description: '', note: '' };
+  const sheet = { title: e ? (k === 'income' ? 'Income' : 'Expense') : (k === 'income' ? 'New income' : 'New expense'), draft: d,
+    body: () => entryBody(d), mount: o => { bindDraft(o, d); o.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); d[b.dataset.pick] = b.dataset.pick === 'planned' ? b.dataset.v === '1' : (b.dataset.pick === 'category_id' ? +b.dataset.v : b.dataset.v); redrawTop(); })); },
+    foot: () => `${d.id ? '<button class="btn danger" data-action="delEntry">Delete</button>' : ''}<div class="grow">${d.id ? '' : '<button class="btn" data-action="saveEntry" data-more="1">Save &amp; add another</button>'}<button class="btn pri" data-action="saveEntry">Save</button></div>` };
+  openSheet(sheet);
+}
+function entryBody(d) {
+  const chip = (field, v, label, on) => `<button class="chip ${on ? 'brand' : ''}" style="border:0;cursor:pointer;padding:6px 10px;font-size:13px" data-pick="${field}" data-v="${v}">${esc(label)}</button>`;
+  return `
+    ${d.id ? '' : `<div class="seg" style="margin-top:12px">${['expense', 'income'].map(k => `<button class="${d.kind === k ? 'on' : ''}" data-action="entryKind" data-v="${k}">${k === 'income' ? 'Income' : 'Expense'}</button>`).join('')}</div>`}
+    <div class="grid2">
+      <label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
+      <label class="f"><span>Date</span><input class="in" type="date" data-k="entry_date" value="${esc(d.entry_date)}"></label>
+    </div>
+    <div class="small muted" style="margin:4px 2px">Category</div>
+    <div class="chips">${catsOf(d.kind).map(c => chip('category_id', c.id, c.name, c.id === d.category_id)).join('')}<button class="chip" style="border:0;cursor:pointer;padding:6px 10px;font-size:13px" data-action="newCategory" data-kind="${d.kind}">＋ New</button></div>
+    <label class="f"><span>What for (optional)</span><input class="in" data-k="description" value="${esc(d.description)}" placeholder="${d.kind === 'income' ? 'e.g. Oct 3 salary' : 'e.g. Pedia check-up'}"></label>
+    <div class="grid2">
+      <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num>${hhOpts(d.person_id)}</select></label>
+      <label class="f"><span>${d.kind === 'income' ? 'Received via' : 'Paid with'}</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+    </div>
+    ${d.kind === 'expense' ? `<div class="small muted" style="margin:4px 2px">Was this expected?</div><div class="chips">${chip('planned', '1', 'Planned', d.planned)}${chip('planned', '0', 'Unplanned / surprise', !d.planned)}</div>` : ''}
+    <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
+    <p class="small muted">Don't add card bill payments here — your card purchases are already counted from the Cards tab.</p>`;
+}
+async function saveEntry(more) {
+  const top = SHEETS[SHEETS.length - 1], d = top.draft;
+  const amount = r2(num(d.amount));
+  if (!(amount > 0)) return toast('Add the amount');
+  if (!d.category_id) return toast('Pick a category');
+  const row = { kind: d.kind, amount, entry_date: d.entry_date || todayISO(), category_id: d.category_id, person_id: d.person_id || IX.me,
+                method: d.method || null, planned: d.kind === 'income' ? true : !!d.planned, description: d.description.trim() || null, note: d.note.trim() || null };
+  try {
+    if (d.id) await upd('entries', d.id, row); else await ins('entries', [row]);
+    if (more) { Object.assign(d, { amount: '', description: '', note: '' }); redrawTop(); render(); toast('Saved — add the next one'); setTimeout(() => document.querySelector('.overlay:last-child [data-k=amount]')?.focus(), 50); }
+    else { closeSheet(); render(); toast('Saved'); }
+  } catch (e) { toast('Could not save: ' + (e.message || e)); }
+}
+function openMulti() {
+  const k = 'expense';
+  const blank = () => ({ entry_date: todayISO(), category_id: catsOf(k)[0]?.id, amount: '', description: '' });
+  const d = { kind: k, planned: true, method: 'Cash', person_id: IX.me, rows: [blank(), blank(), blank()] };
+  const sheet = { title: 'Add several', draft: d, body: () => multiBody(d),
+    mount: o => { bindDraft(o, d); o.querySelectorAll('[data-ri]').forEach(el => el.addEventListener('input', () => { const r = d.rows[+el.dataset.ri]; r[el.dataset.rk] = el.dataset.rk === 'category_id' ? +el.value : el.value; const t = o.querySelector('#multisum'); if (t) t.textContent = multiSum(d); })); o.querySelector('#mplan')?.addEventListener('change', e => { d.planned = !e.target.checked; }); },
+    foot: () => `<button class="btn" data-action="multiAdd">＋ Row</button><div class="grow"><button class="btn pri" data-action="multiSave">Save all</button></div>` };
+  sheet.blank = blank; openSheet(sheet);
+}
+const multiSum = d => { const f = d.rows.filter(r => num(r.amount) > 0); return `${f.length} row${f.length === 1 ? '' : 's'} · ${peso(sum(f, r => num(r.amount)))}`; };
+function multiBody(d) {
+  return `
+    <div class="seg" style="margin-top:12px">${['expense', 'income'].map(k => `<button class="${d.kind === k ? 'on' : ''}" data-action="multiKind" data-v="${k}">${k === 'income' ? 'Income' : 'Expense'}</button>`).join('')}</div>
+    <div class="grid2">
+      <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num>${hhOpts(d.person_id)}</select></label>
+      <label class="f"><span>${d.kind === 'income' ? 'Received via' : 'Paid with'}</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+    </div>
+    ${d.kind === 'expense' ? `<label class="small row" style="gap:6px;margin:4px 2px"><input type="checkbox" id="mplan" ${d.planned ? '' : 'checked'}> All of these were unplanned / surprise</label>` : ''}
+    <div class="sumline" id="multisum">${multiSum(d)}</div>
+    ${d.rows.map((r, i) => `<div class="charge"><div class="grid2" style="gap:6px">
+      <input class="in" type="date" data-ri="${i}" data-rk="entry_date" value="${esc(r.entry_date)}">
+      <input class="in" type="number" inputmode="decimal" step="0.01" placeholder="₱ amount" data-ri="${i}" data-rk="amount" value="${esc(r.amount)}">
+      <select class="in" data-ri="${i}" data-rk="category_id">${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === r.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+      <input class="in" placeholder="What for (optional)" data-ri="${i}" data-rk="description" value="${esc(r.description)}">
+    </div></div>`).join('')}
+    <p class="small muted">Rows without an amount are skipped.</p>`;
+}
+async function saveMulti() {
+  const d = SHEETS[SHEETS.length - 1].draft;
+  const rows = d.rows.filter(r => num(r.amount) > 0).map(r => ({ kind: d.kind, entry_date: r.entry_date || todayISO(), amount: r2(num(r.amount)), category_id: r.category_id,
+    person_id: d.person_id || IX.me, method: d.method || null, planned: d.kind === 'income' ? true : !!d.planned, description: (r.description || '').trim() || null }));
+  if (!rows.length) return toast('Add at least one amount');
+  try { await ins('entries', rows); closeSheet(); render(); toast(`Saved ${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}`); }
+  catch (e) { toast('Could not save: ' + (e.message || e)); }
+}
+function openRecurringList() {
+  openSheet({ title: 'Recurring income & bills', body: () => `
+    <p class="small muted">These are added automatically on their days (e.g. salary on the 3rd and 18th). You can still edit or delete each one after it's added.</p>
+    <div class="card list">${S.recurring.map(r => `<div class="item" data-action="openRec" data-id="${r.id}"><div class="grow"><div class="b">${esc(r.description)} ${r.active ? '' : '<span class="pill">paused</span>'}</div>
+      <div class="small muted">${r.kind === 'income' ? 'Income' : 'Expense'} · ${esc(catName(r.category_id))} · every ${r.days.map(x => ordinal(x)).join(' & ')}</div></div><div class="right b">${peso(r.amount)}</div></div>`).join('') || '<div class="empty">Nothing yet</div>'}</div>
+    <button class="btn pri block" data-action="openRec">＋ Add recurring</button>` });
+}
+const ordinal = n => n + (n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th');
+function openRec(id) {
+  const r = id ? S.recurring.find(x => x.id === id) : null;
+  const d = r ? { ...r, amount: String(r.amount), days: r.days.join(', ') }
+              : { id: null, kind: 'income', description: '', amount: '', category_id: catsOf('income')[0]?.id, person_id: IX.me, method: 'Bank transfer', days: '3, 18', start_date: todayISO(), active: true };
+  openSheet({ title: r ? 'Recurring' : 'New recurring', draft: d, mount: o => bindDraft(o, d),
+    body: () => `
+      <div class="seg" style="margin-top:12px">${['income', 'expense'].map(k => `<button class="${d.kind === k ? 'on' : ''}" data-action="recKind" data-v="${k}">${k === 'income' ? 'Income' : 'Expense'}</button>`).join('')}</div>
+      <label class="f"><span>Name</span><input class="in" data-k="description" value="${esc(d.description)}" placeholder="${d.kind === 'income' ? 'e.g. My salary' : 'e.g. Meralco'}"></label>
+      <div class="grid2">
+        <label class="f"><span>Amount (₱) each time</span><input class="in" type="number" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
+        <label class="f"><span>Days of the month</span><input class="in" data-k="days" value="${esc(d.days)}" placeholder="3, 18"></label>
+        <label class="f"><span>Category</span><select class="in" data-k="category_id" data-num>${catsOf(d.kind).map(c => `<option value="${c.id}" ${c.id === d.category_id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
+        <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num>${hhOpts(d.person_id)}</select></label>
+        <label class="f"><span>Via</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+        <label class="f"><span>Start from</span><input class="in" type="date" data-k="start_date" value="${esc(d.start_date)}"></label>
+      </div>
+      <label class="f"><span>Status</span><select class="in" data-k="active"><option value="true" ${d.active ? 'selected' : ''}>Active</option><option value="false" ${!d.active ? 'selected' : ''}>Paused</option></select></label>`,
+    foot: () => `${d.id ? '<button class="btn danger" data-action="delRec">Delete</button>' : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveRec">Save</button></div>` });
+}
+async function saveRec() {
+  const d = SHEETS[SHEETS.length - 1].draft;
+  const days = [...new Set(String(d.days).split(/[^0-9]+/).map(Number).filter(n => n >= 1 && n <= 31))].sort((a, b) => a - b);
+  const row = { kind: d.kind, description: d.description.trim(), amount: r2(num(d.amount)), category_id: d.category_id, person_id: d.person_id || IX.me,
+                method: d.method || null, days, start_date: d.start_date || todayISO(), active: String(d.active) === 'true' };
+  if (!row.description) return toast('Add a name'); if (!(row.amount > 0)) return toast('Add the amount'); if (!days.length) return toast('Add the day(s), e.g. 3, 18');
+  try {
+    if (d.id) { const old = S.recurring.find(x => x.id === d.id); if (old.start_date !== row.start_date) row.generated_until = null; await upd('recurring', d.id, row); }
+    else await ins('recurring', [row]);
+    const made = await ensureRecurring(); closeSheet(); redrawTop(); render(); toast(made ? `Saved · ${made} entr${made === 1 ? 'y' : 'ies'} added` : 'Saved');
+  } catch (e) { toast('Could not save: ' + (e.message || e)); }
+}
+// Create due recurring entries (up to today) — only once per date, even if you delete one later.
+async function ensureRecurring() {
+  if (!S._money) return 0;
+  const today = todayISO(), rows = [], touched = [];
+  for (const r of S.recurring) {
+    if (!r.active) continue;
+    const from = r.generated_until ? addDays(r.generated_until, 1) : r.start_date;
+    if (from > today) continue;
+    for (let m = monthOf(from); m <= monthOf(today); m = addMonths(m, 1)) {
+      const [y, mo] = m.split('-').map(Number), dim = new Date(y, mo, 0).getDate();
+      for (const day of [...new Set(r.days.map(x => Math.min(x, dim)))]) {
+        const iso = `${y}-${pad(mo)}-${pad(day)}`;
+        if (iso >= from && iso <= today && !S.entries.some(e => e.recurring_id === r.id && e.entry_date === iso))
+          rows.push({ kind: r.kind, entry_date: iso, amount: r.amount, category_id: r.category_id, person_id: r.person_id, method: r.method, planned: true, description: r.description, recurring_id: r.id });
+      }
+    }
+    if (r.generated_until !== today) touched.push(r.id);
+  }
+  if (rows.length) await ins('entries', rows);
+  for (const id of touched) await upd('recurring', id, { generated_until: today });
+  return rows.length;
+}
+async function ensureMoneyDefaults() {
+  if (!S._money || S.categories.length) return;
+  const rows = []; for (const kind of ['income', 'expense']) DEFAULT_CATS[kind].forEach((name, i) => rows.push({ kind, name, sort: i }));
+  await ins('categories', rows);
+}
+function openMoneyCat(kind, cats) {
+  const p = moneyPeriod(), set = new Set(cats.split('|'));
+  const items = moneyItems(p.from, p.to).filter(x => x.kind === kind && set.has(x.cat)).sort((a, b) => b.date.localeCompare(a.date));
+  openSheet({ title: `${cats.includes('|') ? 'Others' : cats} · ${p.label}`, body: () => `
+    <div class="card"><div class="small muted">Total</div><div class="big">${peso(sum(items, x => x.amount))}</div></div>
+    <div class="card list">${items.map(x => `<div class="item" data-action="${x.src === 'card' ? 'openTx' : 'openEntry'}" data-id="${x.id}"><div class="grow"><div class="b ell">${esc(x.desc)}</div>
+      <div class="small muted">${dateLabel(x.date)} · ${x.src === 'card' ? 'Card' : 'Entry'}${set.size > 1 ? ' · ' + esc(x.cat) : ''}${x.person_id && !isMe(x.person_id) ? ' · ' + esc(personName(x.person_id)) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">Nothing here</div>'}</div>
+    ${kind === 'expense' && items.some(x => x.src === 'card') ? '<p class="small muted">Card items are put in a category automatically. To change one, open it and set its Category to one of these names.</p>' : ''}` });
+}
+function openAddChooser() {
+  openSheet({ title: 'Add', body: () => `<div class="card list">
+    <div class="item" data-action="chooseAdd" data-v="card"><div class="grow"><div class="b">💳 Card transaction</div><div class="small muted">Something charged to a credit card</div></div></div>
+    <div class="item" data-action="chooseAdd" data-v="expense"><div class="grow"><div class="b">➖ Expense (not on card)</div><div class="small muted">Cash, GCash, debit — planned or surprise</div></div></div>
+    <div class="item" data-action="chooseAdd" data-v="income"><div class="grow"><div class="b">➕ Income</div><div class="small muted">Salary, bonus, side business…</div></div></div>
+    <div class="item" data-action="chooseAdd" data-v="multi"><div class="grow"><div class="b">🧾 Add several at once</div><div class="small muted">Many expenses or incomes in one go</div></div></div>
+    <div class="item" data-action="chooseAdd" data-v="pdf"><div class="grow"><div class="b">📄 Upload statement PDF</div><div class="small muted">Import a card statement</div></div></div></div>` });
 }
 
 /* ---------------- statement PDF upload ---------------- */
@@ -1029,8 +1360,37 @@ async function exportBackup() {
 /* ---------------- actions ---------------- */
 const A = {
   go: el => { UI.view = el.dataset.view; render(); scrollTo(0, 0); },
-  prevMonth: () => { UI.month = addMonths(UI.month, -1); render(); },
-  nextMonth: () => { UI.month = addMonths(UI.month, 1); render(); },
+  prevMonth: () => { if (UI.view === 'money') { UI.mMonth = addMonths(UI.mMonth, -1); UI.mSel = null; } else UI.month = addMonths(UI.month, -1); render(); },
+  nextMonth: () => { if (UI.view === 'money') { UI.mMonth = addMonths(UI.mMonth, 1); UI.mSel = null; } else UI.month = addMonths(UI.month, 1); render(); },
+  addMenu: () => openAddChooser(),
+  chooseAdd: el => { closeSheet(); const v = el.dataset.v; if (v === 'card') openTx(null); else if (v === 'pdf') openUpload(); else if (v === 'multi') openMulti(); else openEntry(null, v); },
+  newEntry: el => openEntry(null, el.dataset.kind),
+  openEntry: el => openEntry(+el.dataset.id),
+  entryKind: el => { const d = SHEETS[SHEETS.length - 1].draft; d.kind = el.dataset.v; d.category_id = catsOf(d.kind)[0]?.id; if (d.kind === 'income') d.method = 'Bank transfer'; SHEETS[SHEETS.length - 1].title = d.kind === 'income' ? 'New income' : 'New expense'; drawSheets(); },
+  saveEntry: el => saveEntry(!!el.dataset.more),
+  delEntry: async () => { const d = SHEETS[SHEETS.length - 1].draft; if (!(await ask('Delete this entry?', 'Delete', true))) return; try { await del('entries', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
+  newCategory: el => { const kind = el.dataset.kind, owner = SHEETS[SHEETS.length - 1]; const d = { name: '' };
+    openSheet({ title: kind === 'income' ? 'New income category' : 'New expense category', draft: d, mount: o => bindDraft(o, d),
+      body: () => `<label class="f"><span>Name</span><input class="in" data-k="name" placeholder="e.g. Pets"></label>`,
+      foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="addCategory" data-kind="${kind}">Add</button></div>`, owner }); },
+  addCategory: async el => { const top = SHEETS[SHEETS.length - 1], name = top.draft.name.trim(), kind = el.dataset.kind; if (!name) return toast('Add a name');
+    if (S.categories.some(c => c.kind === kind && c.name.toLowerCase() === name.toLowerCase())) return toast('That category already exists');
+    try { const [c] = await ins('categories', [{ kind, name, sort: 100 }]); closeSheet(); if (top.owner?.draft) { top.owner.draft.category_id = c.id; redrawTop(); } toast('Added'); } catch (e) { toast('Could not add: ' + e.message); } },
+  multiEntry: () => openMulti(),
+  multiKind: el => { const d = SHEETS[SHEETS.length - 1].draft; d.kind = el.dataset.v; const c = catsOf(d.kind)[0]?.id; d.rows.forEach(r => r.category_id = c); if (d.kind === 'income') d.method = 'Bank transfer'; redrawTop(); },
+  multiAdd: () => { const s = SHEETS[SHEETS.length - 1]; const r = s.blank(); r.category_id = catsOf(s.draft.kind)[0]?.id; s.draft.rows.push(r); redrawTop(); },
+  multiSave: () => { const d = SHEETS[SHEETS.length - 1].draft; const mp = document.querySelector('.overlay:last-child #mplan'); if (mp) d.planned = !mp.checked; saveMulti(); },
+  openRecurring: () => openRecurringList(),
+  openRec: el => openRec(el.dataset.id ? +el.dataset.id : null),
+  recKind: el => { const d = SHEETS[SHEETS.length - 1].draft; d.kind = el.dataset.v; d.category_id = catsOf(d.kind)[0]?.id; redrawTop(); },
+  saveRec: () => saveRec(),
+  delRec: async () => { const d = SHEETS[SHEETS.length - 1].draft; if (!(await ask('Delete this recurring item? Entries already added stay.', 'Delete', true))) return;
+    try { await del('recurring', d.id); closeSheet(); redrawTop(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
+  moneyCat: el => openMoneyCat(el.dataset.kind, el.dataset.cat),
+  moneyPick: el => { UI.mSel = el.dataset.m; render(); },
+  mHalf: el => { UI.mHalf = +el.dataset.v; render(); },
+  mPlanned: el => { UI.mPlanned = el.dataset.v; render(); },
+  mCards: () => { UI.mCards = !UI.mCards; render(); },
   closeSheet: () => { const s = SHEETS[SHEETS.length - 1]; if (s?.resolve) s.resolve(false); closeSheet(); },
   askYes: () => { const s = SHEETS[SHEETS.length - 1]; closeSheet(); s.resolve(true); },
   askNo: () => { const s = SHEETS[SHEETS.length - 1]; closeSheet(); s.resolve(false); },
@@ -1078,7 +1438,7 @@ const A = {
     if (S.people.some(p => p.name.toLowerCase() === name.toLowerCase())) return toast('That name already exists');
     try { const [p] = await ins('people', [{ name, kind: d.kind }]); const cb = SHEETS[SHEETS.length - 1].onAdded; closeSheet(); if (cb) cb(p); else render(); toast(`Added ${name}`); }
     catch (e) { toast('Could not add: ' + e.message); } },
-  savePerson: async el => { const d = SHEETS[SHEETS.length - 1].draft; try { await upd('people', +el.dataset.id, { name: d.name.trim(), kind: d.kind }); SHEETS[SHEETS.length - 1].title = d.name.trim(); drawSheets(); render(); toast('Saved'); } catch (e) { toast('Could not save: ' + e.message); } },
+  savePerson: async el => { const d = SHEETS[SHEETS.length - 1].draft; try { const hh = document.querySelector('.overlay:last-child #hh'); await upd('people', +el.dataset.id, { name: d.name.trim(), kind: d.kind, ...(hh ? { household: hh.checked } : {}) }); SHEETS[SHEETS.length - 1].title = d.name.trim(); drawSheets(); render(); toast('Saved'); } catch (e) { toast('Could not save: ' + e.message); } },
   personPay: async el => { const pid = +el.dataset.id; const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.pay)); if (!(amt > 0)) return toast('Add the amount');
     const { out } = allocate(pid, amt); if (!out.length) return toast('Nothing unpaid for this person');
     try { await ins('collections', out.map(x => ({ charge_id: x.c.id, amount: x.take, received_on: d.pay_on || todayISO(), note: (d.pay_note || '').trim() || null })));
@@ -1141,9 +1501,12 @@ document.addEventListener('input', e => {
 async function loadData() {
   $('#root').innerHTML = '<div class="center"><div class="muted">Loading…</div></div>';
   try {
-    S = await db.loadAll(); reindex();
+    S = await db.loadAll();
+    S._money = OPT_TABLES.every(t => Array.isArray(S[t])); for (const t of OPT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
+    reindex();
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
     const made = await ensureInstallmentMonths();
+    await ensureMoneyDefaults(); await ensureRecurring();
     render(); if (made) toast(`${made} installment month${made === 1 ? '' : 's'} added`);
   } catch (e) {
     console.error(e);
