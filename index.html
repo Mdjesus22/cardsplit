@@ -251,13 +251,19 @@ const received = ch => sum(IX.collByCharge.get(ch.id) || [], c => c.amount);
 const balance = ch => r2(Number(ch.amount) - received(ch));
 const isMe = pid => IX.person.get(pid)?.kind === 'me';
 const personName = pid => IX.person.get(pid)?.name ?? '?';
+// Straight purchase converted to installment (or fully refunded): the purchase and its cancelling credit
+// are both marked with this category and are left out of who-owes / balances / Money.
+const CONVERTED = 'Converted to installment';
+const isConv = t => !!t && t.category === CONVERTED;
+const live = c => !isConv(IX.tx.get(c.transaction_id));
 function chargeStatus(ch) {
+  if (!live(ch)) return 'converted';
   if (isMe(ch.person_id)) return 'mine';
   const b = balance(ch);
   if (b <= 0.004) return 'paid';
   return received(ch) > 0.004 ? 'partial' : 'unpaid';
 }
-const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine' };
+const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine', converted: 'Converted' };
 const cardLabel = id => { const c = IX.card.get(id); return c ? (c.bank || c.code) + (c.last4 ? ' ••' + c.last4 : '') : '?'; };
 const cardCode = id => IX.card.get(id)?.code ?? '?';
 function dueDate(cardId, month) {
@@ -379,12 +385,12 @@ function stmtTotals(st, inApp) {
 function viewHome() {
   const m = UI.month, today = todayISO();
   const txs = S.transactions.filter(t => t.month === m);
-  const charges = txs.flatMap(t => IX.chargesByTx.get(t.id) || []);
+  const charges = txs.flatMap(t => IX.chargesByTx.get(t.id) || []).filter(live);
   const others = charges.filter(c => !isMe(c.person_id));
   const total = sum(txs, t => t.amount), mine = sum(charges.filter(c => isMe(c.person_id)), c => c.amount);
   const cardIds = [...new Set([...S.cards.filter(c => c.active).map(c => c.id), ...txs.map(t => t.card_id)])];
   const cardRows = cardIds.map(id => {
-    const ct = txs.filter(t => t.card_id === id); const cch = ct.flatMap(t => IX.chargesByTx.get(t.id) || []);
+    const ct = txs.filter(t => t.card_id === id); const cch = ct.flatMap(t => IX.chargesByTx.get(t.id) || []).filter(live);
     const st = IX.stmt.get(id + '|' + m); const due = dueDate(id, m); const paid = !!st?.paid_to_bank;
     let badge = '';
     if (paid) badge = `<span class="pill green">Paid ✓</span>`;
@@ -397,8 +403,8 @@ function viewHome() {
   }).join('');
   const byPerson = [...groupBy(others, 'person_id')].map(([pid, cs]) => ({ pid, bal: sum(cs, balance), amt: sum(cs, c => c.amount) }))
     .filter(x => Math.abs(x.bal) > 0.004).sort((a, b) => b.bal - a.bal);
-  const promised = S.charges.filter(c => c.promise_date && !isMe(c.person_id) && balance(c) > 0.004).sort((a, b) => a.promise_date.localeCompare(b.promise_date)).slice(0, 8);
-  const allOwed = sum(S.charges.filter(c => !isMe(c.person_id)), balance);
+  const promised = S.charges.filter(c => live(c) && c.promise_date && !isMe(c.person_id) && balance(c) > 0.004).sort((a, b) => a.promise_date.localeCompare(b.promise_date)).slice(0, 8);
+  const allOwed = sum(S.charges.filter(c => live(c) && !isMe(c.person_id)), balance);
   return `
     <div class="sec">Statement ${monthLabel(m)} · due ${monthLabel(addMonths(m, 1))}</div>
     <div class="tiles">
@@ -449,7 +455,7 @@ function txItem(t) {
   return `<div class="item" data-action="openTx" data-id="${t.id}">
     <div class="grow"><div class="b ell">${esc(t.description)}</div>
       <div class="small muted">${t.txn_date ? dateLabel(t.txn_date) : monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
-      <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' ? '' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
+      <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' || st === 'converted' ? '' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
     <div class="right b">${peso(t.amount)}</div></div>`;
 }
 function viewTx() {
@@ -493,6 +499,8 @@ function txBody(d) {
   const cats = [...new Set(S.transactions.map(t => t.category).filter(Boolean))].sort();
   const people = S.people.filter(p => p.active || d.charges.some(c => c.person_id === p.id));
   return `
+    ${d.id && isConv(IX.tx.get(d.id)) ? `<div class="card small" style="margin-top:12px">🔁 <b>Converted to installment</b> — this line and the line it cancels are left out, so nobody owes them. Only the installment months count. <button class="linkish" data-action="unconvert" data-id="${d.id}">undo for this line</button></div>`
+      : d.id && !d.installment_id ? `<button class="btn sm" style="margin-top:12px" data-action="openConvert" data-id="${d.id}">🔁 This was converted to installment</button>` : ''}
     ${inst ? `<div class="card small" style="margin-top:12px">Installment <b>${d.installment_no} of ${inst.months}</b> · ${esc(inst.item)} <button class="linkish" data-action="openPlan" data-id="${inst.id}">open plan</button></div>` : ''}
     <label class="f"><span>Description</span><input class="in" data-k="description" value="${esc(d.description)}" placeholder="e.g. Lazada – phone case"></label>
     <div class="grid2">
@@ -734,7 +742,7 @@ async function savePlan() {
 
 /* ---------------- PEOPLE ---------------- */
 function personStats(pid) {
-  const cs = IX.chargesByPerson.get(pid) || [];
+  const cs = (IX.chargesByPerson.get(pid) || []).filter(live);
   const open = cs.filter(c => balance(c) > 0.004);
   const cred = cs.filter(c => balance(c) < -0.004);
   return { bal: sum(cs, balance), open: open.length, unpaid: sum(open, balance), credit: r2(-sum(cred, balance)), credits: cred.length,
@@ -742,7 +750,7 @@ function personStats(pid) {
 }
 // Charges where the person has a credit: a refund line, or paid more than the item
 function creditCharges(pid) {
-  return (IX.chargesByPerson.get(pid) || []).filter(c => balance(c) < -0.004).map(c => ({ c, t: IX.tx.get(c.transaction_id) }))
+  return (IX.chargesByPerson.get(pid) || []).filter(c => live(c) && balance(c) < -0.004).map(c => ({ c, t: IX.tx.get(c.transaction_id) }))
     .sort((a, b) => a.t.month.localeCompare(b.t.month) || a.c.id - b.c.id);
 }
 function viewPeople() {
@@ -767,8 +775,35 @@ function openPerson(pid) {
     foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Close</button><button class="btn pri" data-action="savePerson" data-id="${pid}">Save name</button></div>` };
   openSheet(sheet);
 }
+function openConvert(id) {
+  const t = IX.tx.get(id), amt = Number(t.amount);
+  const cands = S.transactions.filter(x => x.id !== t.id && x.card_id === t.card_id && !isConv(x) && Math.abs(Number(x.amount) + amt) < 0.01 && Math.abs(monthDiff(x.month, t.month)) <= 3)
+    .sort((a, b) => Math.abs(monthDiff(a.month, t.month)) - Math.abs(monthDiff(b.month, t.month)));
+  openSheet({ title: 'Converted to installment', body: () => `
+    <p class="small">When a straight purchase is converted to installment, the bank cancels it with a credit for the same amount and then bills the monthly installments. Pair the purchase with its credit so nobody is charged for them — only the installment months count.</p>
+    <div class="card small"><b>${esc(t.description)}</b> · ${monthLabel(t.month)} · ${peso(amt)}</div>
+    <div class="sec">Pick the ${amt < 0 ? 'original purchase' : 'cancelling credit'} (${cands.length} found)</div>
+    <div class="card list">${cands.map(x => `<div class="item" data-action="convPick" data-a="${t.id}" data-b="${x.id}"><div class="grow"><div class="b ell">${esc(x.description)}</div>
+      <div class="small muted">${monthLabel(x.month)}${x.txn_date ? ' · ' + dateLabel(x.txn_date) : ''} · ${(IX.chargesByTx.get(x.id) || []).map(c => esc(personName(c.person_id))).join(', ')}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('')
+      || `<div class="empty">No line of ${peso(-amt)} on this card within 3 months.</div>`}</div>
+    <button class="btn block" style="margin-top:8px" data-action="convPick" data-a="${t.id}" data-b="0">The ${amt < 0 ? 'purchase' : 'credit'} isn't in the app — mark just this line</button>` });
+}
+// Undo "Use credits" payments that were made with a conversion credit
+function creditUseRows(txIds) {
+  const out = [];
+  for (const tid of txIds) for (const c of (IX.chargesByTx.get(tid) || [])) {
+    const neg = (IX.collByCharge.get(c.id) || []).filter(x => Number(x.amount) < 0 && x.note === 'Credit used on other items');
+    if (!neg.length) continue;
+    let left = r2(-sum(neg, x => x.amount)); out.push(...neg);
+    const dates = new Set(neg.map(x => x.received_on));
+    const paid = (IX.chargesByPerson.get(c.person_id) || []).flatMap(ch => (IX.collByCharge.get(ch.id) || []))
+      .filter(x => x.note === 'Paid using credit' && dates.has(x.received_on)).sort((a, b) => b.id - a.id);
+    for (const x of paid) { if (left <= 0.004) break; out.push(x); left = r2(left - Number(x.amount)); }
+  }
+  return out;
+}
 function openCharges(pid) {
-  return (IX.chargesByPerson.get(pid) || []).filter(c => balance(c) > 0.004)
+  return (IX.chargesByPerson.get(pid) || []).filter(c => live(c) && balance(c) > 0.004)
     .map(c => ({ c, t: IX.tx.get(c.transaction_id) }))
     .sort((a, b) => a.t.month.localeCompare(b.t.month) || (a.t.txn_date || '').localeCompare(b.t.txn_date || '') || a.c.id - b.c.id);
 }
@@ -802,9 +837,10 @@ function personBody(p, d) {
       <div class="right"><div class="b">${peso(balance(c))}</div><span class="chip ${st}">${STATUS_LABEL[st]}</span></div></div>`; }).join('') || '<div class="empty">Nothing unpaid 🎉</div>'}</div>
     ${(() => { const cr = creditCharges(p.id); if (!cr.length) return '';
       return `<div class="sec">Credits (${cr.length}) · ${peso(-sum(cr, x => balance(x.c)))}</div>
-      <p class="small muted" style="margin:0 2px 6px">Money in their favour — a refund line charged to them, or a payment bigger than the item. It's already taken off "Still owes you".</p>
+      <p class="small muted" style="margin:0 2px 6px">Money in their favour — a refund, or a payment bigger than the item. It's already taken off "Still owes you". If a credit is the bank cancelling a straight purchase that was <b>converted to installment</b>, tap 🔁 on it instead — then it's paired with the purchase and nobody owes either.</p>
       <div class="card list">${cr.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
-        <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `paid ${peso(received(c))} on ${peso(c.amount)}`}</div></div>
+        <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `paid ${peso(received(c))} on ${peso(c.amount)}`}</div>
+        ${Number(c.amount) < 0 ? `<button class="btn sm" style="margin-top:6px" data-action="openConvert" data-id="${t.id}">🔁 Converted to installment</button>` : ''}</div>
         <div class="right b" style="color:var(--paid)">${peso(-balance(c))}</div></div>`).join('')}</div>
       ${items.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
     <div class="sec">Recent payments</div>
@@ -893,7 +929,7 @@ function moneyItems(from, to, opts = {}) {
   if ((opts.cards ?? UI.mCards) && plan === 'all') {
     for (const c of S.charges) {
       if (!isHousehold(c.person_id)) continue;
-      const t = IX.tx.get(c.transaction_id); if (!t) continue;
+      const t = IX.tx.get(c.transaction_id); if (!t || isConv(t)) continue;
       const d = t.txn_date || t.month; if (!inR(d)) continue;
       items.push({ kind: 'expense', date: d, amount: Number(c.amount), cat: cardCategory(t), desc: t.description, src: 'card', id: t.id, person_id: c.person_id });
     }
@@ -1260,6 +1296,14 @@ function planImport(st) {
     if (dup) { used.add(dup.id); x.kind = 'dup'; x.on = false; x.matchTx = dup; continue; }
     if (x.k != null) { x.kind = 'newplan'; x.makePlan = true; }
   }
+  for (const x of L) {
+    if (x.kind !== 'new' || x.amount >= 0) continue;
+    const fw = s => normDesc(s).split(' ')[0];
+    const y = L.find(y => y !== x && y.kind === 'new' && y.amount > 0 && !y.convPair && Math.abs(y.amount + x.amount) < 0.01 && fw(y.desc) === fw(x.desc));
+    if (y) { x.kind = y.kind = 'conv'; x.convPair = y; y.convPair = x; continue; }
+    const t = S.transactions.find(t => t.card_id === x.cardId && !isConv(t) && Number(t.amount) > 0 && Math.abs(Number(t.amount) + x.amount) < 0.01 && Math.abs(monthDiff(t.month, m)) <= 3 && fw(t.description) === fw(x.desc));
+    if (t) { x.kind = 'conv'; x.convTx = t; }
+  }
   const matched = new Set(L.map(x => x.matchTx?.id).filter(Boolean));
   st.orphans = S.transactions.filter(t => t.card_id === cardId && t.month === m && t.source === 'auto' && !matched.has(t.id)).map(t => ({ t, remove: false }));
 }
@@ -1286,7 +1330,8 @@ function uploadBody(d) {
   const opts = sel => people.map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('') + '<option value="__new">＋ New person…</option>';
   const tag = x => ({ new: '', payment: '<span class="pill">Payment to bank — skipped</span>', dup: '<span class="pill">Already in app</span>',
     inst: `<span class="pill amber">Installment ${x.planNo}/${x.plan?.months} → ${esc(x.plan?.item || '')}${x.matchTx ? ' (fills the month already listed)' : ''}</span>`,
-    newplan: `<span class="pill amber">Installment ${x.k}/${x.n} — new</span>` })[x.kind];
+    newplan: `<span class="pill amber">Installment ${x.k}/${x.n} — new</span>`,
+    conv: `<span class="pill">🔁 Cancels ${esc(x.convPair ? x.convPair.desc : x.convTx?.description || '')} (${peso(x.convPair ? x.convPair.amount : x.convTx?.amount)}) — converted to installment / refunded, nobody pays</span>` })[x.kind];
   const on = st.lines.filter(x => x.on);
   return `
     <div class="card small">${st.info.bank ? `<b>${esc(st.info.bank)}</b> statement` : 'Statement'}${st.info.last4 ? ` · card ••${esc(st.info.last4)}` : ''} · ${st.lines.length} lines found</div>
@@ -1375,13 +1420,14 @@ async function doImport() {
     const fresh = pick.filter(x => !(x.kind === 'inst' && x.matchTx));
     if (fresh.length) {
       const txs = await ins('transactions', fresh.map(x => ({ card_id: x.cardId, month: m, txn_date: x.date, description: x.desc + (x.k && !x.plan ? ` ${x.k}/${x.n}` : ''),
-        category: x.plan ? 'LOAN' : null, amount: x.amount, installment_id: x.plan?.id ?? null, installment_no: x.plan ? x.planNo : null, source: 'pdf' })));
+        category: x.kind === 'conv' ? CONVERTED : x.plan ? 'LOAN' : null, amount: x.amount, installment_id: x.plan?.id ?? null, installment_no: x.plan ? x.planNo : null, source: 'pdf' })));
       const rows = [];
       txs.forEach((t, i) => { const x = fresh[i];
         if (x.plan) for (const c of splitFromShares(x.plan)) rows.push({ ...c, transaction_id: t.id });
         else rows.push({ transaction_id: t.id, person_id: x.person || IX.me, amount: x.amount }); });
       await ins('charges', rows);
     }
+    for (const x of pick.filter(x => x.kind === 'conv' && x.convTx)) await upd('transactions', x.convTx.id, { category: CONVERTED });
     await ensureInstallmentMonths();
     SHEETS.length = 0; drawSheets(); UI.month = m; UI.view = 'tx'; UI.f = { scope: 'month', card: String(st.card_id), people: [], status: '', q: '' };
     render(); toast(`Imported ${pick.length} line${pick.length === 1 ? '' : 's'}${drop.length ? ` · removed ${drop.length}` : ''}`);
@@ -1456,6 +1502,13 @@ const A = {
   txScope: el => { UI.f.scope = el.dataset.v; render(); },
   instFilter: el => { UI.instFilter = el.dataset.v; render(); },
   pickPeople: () => openPeoplePicker(),
+  openConvert: el => openConvert(+el.dataset.id),
+  convPick: async el => { const ids = [+el.dataset.a, +el.dataset.b].filter(Boolean);
+    const undo = creditUseRows(ids);
+    if (undo.length && !(await ask(`This credit was already used to pay other items. Those "Paid using credit" payments will be removed too, so the installments show as unpaid again. Continue?`, 'Continue'))) return;
+    try { for (const x of undo) await del('collections', x.id); for (const id of ids) await upd('transactions', id, { category: CONVERTED });
+      SHEETS.length = 0; drawSheets(); render(); toast(ids.length === 2 ? 'Paired — nobody owes these two lines' : 'Marked as converted'); } catch (e) { toast('Could not save: ' + e.message); } },
+  unconvert: async el => { try { await upd('transactions', +el.dataset.id, { category: null }); SHEETS.length = 0; drawSheets(); render(); toast('Undone for this line'); } catch (e) { toast('Could not save: ' + e.message); } },
   useCredits: async el => { const pid = +el.dataset.id, cr = creditCharges(pid);
     const pool = r2(-sum(cr, x => balance(x.c))); const { out } = allocate(pid, pool); const used = sum(out, x => x.take);
     if (!(used > 0.004)) return toast('Nothing to apply');
@@ -1483,7 +1536,7 @@ const A = {
     catch (e) { toast('Could not save: ' + e.message); } },
   rmPay: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; await del('collections', +el.dataset.id); redrawTop(); render(); },
   markAllPaid: async () => { const d = SHEETS[SHEETS.length - 1].draft;
-    const rows = d.charges.filter(c => c.id).map(c => IX.charge.get(c.id)).filter(c => c && !isMe(c.person_id) && balance(c) > 0.004).map(c => ({ charge_id: c.id, amount: balance(c), received_on: todayISO(), note: 'Marked paid' }));
+    const rows = d.charges.filter(c => c.id).map(c => IX.charge.get(c.id)).filter(c => c && live(c) && !isMe(c.person_id) && balance(c) > 0.004).map(c => ({ charge_id: c.id, amount: balance(c), received_on: todayISO(), note: 'Marked paid' }));
     if (!rows.length) return; await ins('collections', rows); redrawTop(); render(); toast('Marked paid'); },
   saveStmt: async el => { const d = SHEETS[SHEETS.length - 1].draft; const cardId = +el.dataset.card; const st = IX.stmt.get(cardId + '|' + UI.month);
     const row = { due_date: d.due_date || null, total_due: num(d.total_due), min_due: num(d.min_due), paid_to_bank: !!d.paid_to_bank, paid_on: d.paid_on || null, note: (d.note || '').trim() || null };
