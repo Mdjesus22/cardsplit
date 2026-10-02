@@ -126,7 +126,7 @@ details>summary::-webkit-details-marker{display:none}
    2) Upload this file to GitHub Pages (see SETUP guide).
    ===================================================================== */
 const CONFIG = {
-  SUPABASE_URL: 'https://unuwnlgklvjfjqvlodqc.supabase.co/rest/v1/',   // e.g. 'https://abcdefghijkl.supabase.co'
+  SUPABASE_URL: 'https://unuwnlgklvjfjqvlodqc.supabase.co',   // e.g. 'https://abcdefghijkl.supabase.co'
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
@@ -1151,7 +1151,7 @@ async function boot() {
     return;
   }
   const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
-  sb = createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_KEY);
+  sb = createClient(new URL(CONFIG.SUPABASE_URL.trim()).origin, CONFIG.SUPABASE_KEY.trim());   // keeps only https://xxxx.supabase.co
   db = makeSupabaseDB(sb);
   const { data } = await sb.auth.getSession();
   if (data.session) loadData(); else loginScreen();
