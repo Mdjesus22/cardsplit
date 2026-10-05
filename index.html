@@ -195,7 +195,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.3';
+const VERSION = '2.4';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
@@ -303,6 +303,7 @@ function reindex() {
   IX.cat = new Map((S.categories || []).map(r => [r.id, r]));
   IX.vaultByCharge = new Map((S.vault_loans || []).filter(l => l.charge_id).map(l => [l.charge_id, l]));
   IX.movesByLoan = groupBy(S.vault_moves || [], 'loan_id');
+  IX._dueS = undefined;
 }
 const received = ch => sum(IX.collByCharge.get(ch.id) || [], c => c.amount);
 const inVault = ch => !!(IX.vaultByCharge && IX.vaultByCharge.get(ch.id));   // paid from the safety box
@@ -510,7 +511,7 @@ function viewHome() {
   const byPerson = [...groupBy(others, 'person_id')].map(([pid, cs]) => ({ pid, bal: sum(cs, balance), amt: sum(cs, c => c.amount) }))
     .filter(x => Math.abs(x.bal) > 0.004).sort((a, b) => b.bal - a.bal);
   const promised = S.charges.filter(c => live(c) && c.promise_date && !isMe(c.person_id) && balance(c) > 0.004).sort((a, b) => a.promise_date.localeCompare(b.promise_date)).slice(0, 8);
-  const allOwed = sum(S.charges.filter(c => live(c) && !isMe(c.person_id)), balance);
+  const allOwed = sum(S.charges.filter(c => live(c) && !isMe(c.person_id) && !notDueYet(c)), balance);
   return `
     <div class="sec">Statement ${monthLabel(m)} · due ${monthLabel(addMonths(m, 1))}</div>
     <div class="tiles">
@@ -526,7 +527,7 @@ function viewHome() {
     <div class="card list">${byPerson.map(x => `<div class="item" data-action="openPerson" data-id="${x.pid}"><div class="grow b">${esc(personName(x.pid))}</div><div class="right"><div class="b">${peso(x.bal)}</div><div class="small muted">of ${peso(x.amt)}</div></div></div>`).join('') || '<div class="empty">Nobody owes you for this month 🎉</div>'}</div>
     ${promised.length ? `<div class="sec">Promised payments</div><div class="card list">${promised.map(c => { const t = IX.tx.get(c.transaction_id); const late = c.promise_date < today;
       return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b">${esc(personName(c.person_id))}</div><div class="small muted ell">${esc(t.description)} · ${monthLabel(t.month)}</div></div><div class="right"><div class="b">${peso(balance(c))}</div><span class="pill ${late ? 'red' : 'amber'}">${late ? 'Late · ' : ''}${dateLabel(c.promise_date)}</span></div></div>`; }).join('')}</div>` : ''}
-    <div class="card row"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(allOwed)}</div></div><button class="btn sm" data-action="go" data-view="people">See people</button></div>`;
+    <div class="card row"><div class="grow"><div class="small muted">Owed to you (due now)</div><div class="big">${peso(allOwed)}</div></div><button class="btn sm" data-action="go" data-view="people">See people</button></div>`;
 }
 
 /* ---------------- TRANSACTIONS ---------------- */
@@ -913,11 +914,14 @@ async function savePlan() {
 }
 
 /* ---------------- PEOPLE ---------------- */
+// The statement being paid now (e.g. the Sep statement until the last Oct due date). Later statements are "not due yet".
+const dueStmt = () => IX._dueS || (IX._dueS = dueRounds(todayISO())[0].s);
+const notDueYet = c => (IX.tx.get(c.transaction_id)?.month || '') > dueStmt() && balance(c) > 0.004;
 function personStats(pid) {
-  const cs = (IX.chargesByPerson.get(pid) || []).filter(live);
-  const open = cs.filter(c => balance(c) > 0.004);
+  const cs = (IX.chargesByPerson.get(pid) || []).filter(live), later = cs.filter(notDueYet), now = cs.filter(c => !notDueYet(c));
+  const open = now.filter(c => balance(c) > 0.004);
   const cred = cs.filter(c => balance(c) < -0.004);
-  return { bal: sum(cs, balance), open: open.length, unpaid: sum(open, balance), credit: r2(-sum(cred, balance)), credits: cred.length, adv: personAdvance(pid),
+  return { bal: sum(now, balance), open: open.length, unpaid: sum(open, balance), later: sum(later, balance), laterN: later.length, credit: r2(-sum(cred, balance)), credits: cred.length, adv: personAdvance(pid),
            oldest: open.map(c => IX.tx.get(c.transaction_id)?.month).sort()[0] };
 }
 // Charges where the person has a credit: a refund line, or paid more than the item
@@ -930,9 +934,9 @@ function viewPeople() {
     .sort((a, b) => (b.s.bal - a.s.bal) || a.p.name.localeCompare(b.p.name));
   const owing = ppl.filter(x => x.s.bal > 0.004), clear = ppl.filter(x => x.s.bal <= 0.004);
   const item = ({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow"><div class="b">${esc(p.name)} ${p.kind !== 'person' ? `<span class="pill">${p.kind}</span>` : ''}</div>
-    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.adv > 0.004 ? ` · <span style="color:var(--paid)">advance ${peso(s.adv)}</span>` : ''}${s.credit - s.adv > 0.004 ? ` · credit ${peso(r2(s.credit - s.adv))}` : ''}${S._vault && vaultLeft(p.id) > 0.004 ? ` · safety box ${peso(vaultLeft(p.id))}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
+    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.later > 0.004 ? ` · ${peso(s.later)} not due yet` : ''}${s.adv > 0.004 ? ` · <span style="color:var(--paid)">advance ${peso(s.adv)}</span>` : ''}${s.credit - s.adv > 0.004 ? ` · credit ${peso(r2(s.credit - s.adv))}` : ''}${S._vault && vaultLeft(p.id) > 0.004 ? ` · safety box ${peso(vaultLeft(p.id))}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
   return `
-    <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div></div><button class="btn sm" data-action="newPerson">+ Person</button></div>
+    <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (due now)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div>${(l => l > 0.004 ? `<div class="small muted">+ ${peso(l)} on statements not due yet</div>` : '')(sum(ppl, x => x.s.later))}</div><button class="btn sm" data-action="newPerson">+ Person</button></div>
     ${(() => { const adv = ppl.filter(x => x.s.adv > 0.004).sort((a, b) => b.s.adv - a.s.adv), tot = sum(adv, x => x.s.adv);
       return `<div class="card t-mint"><div class="small muted">Advances you're holding</div><div class="big">${peso(tot)}</div>
         <div class="small muted" style="margin-top:2px">Money riders paid ahead. Keep this in your secure wallet. It goes down by itself as their next installment months come in.</div>
@@ -994,13 +998,14 @@ function allocPreview(pid, amount) {
   return `<div class="small" style="margin-top:6px">This will pay, oldest first:<br>${out.map(x => `• ${monthLabel(x.t.month)} ${esc(x.t.description)} — ${peso(x.take)}${x.take < balance(x.c) - 0.004 ? ' (part)' : ''}`).join('<br>')}${left > 0.004 ? `<br><b style="color:var(--paid)">${peso(left)} is more than they owe.</b> It will be saved as an <b>advance</b> and used on their next installment months.` : ''}</div>`;
 }
 function personBody(p, d) {
-  const items = openCharges(p.id);
+  const allOpen = openCharges(p.id), items = allOpen.filter(x => !notDueYet(x.c)), later = allOpen.filter(x => notDueYet(x.c));
   const pays = (IX.chargesByPerson.get(p.id) || []).flatMap(c => (IX.collByCharge.get(c.id) || []).map(x => ({ x, t: IX.tx.get(c.transaction_id) })))
     .sort((a, b) => b.x.received_on.localeCompare(a.x.received_on) || b.x.id - a.x.id).slice(0, 15);
   const s = personStats(p.id);
   return `
     <div class="card"><div class="small muted">${s.bal < -0.004 ? 'They have a credit of' : 'Still owes you'}</div><div class="big ${s.bal > 0.004 ? 'over' : ''}" style="${s.bal < -0.004 ? 'color:var(--paid)' : ''}">${peso(Math.abs(s.bal))}</div>
       ${s.credits ? `<div class="small" style="margin-top:4px">= unpaid items <b>${peso(s.unpaid)}</b> − credits <b style="color:var(--paid)">${peso(s.credit)}</b></div>` : ''}
+      ${s.later > 0.004 ? `<div class="small muted" style="margin-top:4px">+ ${peso(s.later)} on later statements, not due yet</div>` : ''}
       ${s.adv > 0.004 ? `<div class="small" style="margin-top:4px">Advance (paid ahead): <b style="color:var(--paid)">${peso(s.adv)}</b> · used on their next installment months</div>` : ''}
       ${S._vault && vaultLeft(p.id) > 0.004 ? `<div class="small" style="margin-top:4px">Safety box loan: still to pay back <b>${peso(vaultLeft(p.id))}</b> (not included above) · <button class="linkish" data-action="goVault">open</button></div>` : ''}</div>
     ${p.kind !== 'me' ? `<div class="card"><div class="b">Record a payment</div>
@@ -1013,6 +1018,11 @@ function personBody(p, d) {
     <div class="card list">${items.map(({ c, t }) => { const st = chargeStatus(c); return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
       <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}${c.promise_date ? ` · promised ${dateLabel(c.promise_date)}` : ''}</div></div>
       <div class="right"><div class="b">${peso(balance(c))}</div><span class="chip ${st}">${STATUS_LABEL[st]}</span></div></div>`; }).join('') || '<div class="empty">Nothing unpaid 🎉</div>'}</div>
+    ${later.length ? `<div class="sec">Not due yet (${later.length}) · ${peso(sum(later, x => balance(x.c)))}</div>
+    <div class="small muted" style="margin:0 2px 6px">On statements after ${monthLabel(dueStmt())}. They move up to Unpaid items once their statement is the one being paid.</div>
+    <div class="card list">${later.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div>
+      <div class="small muted">${monthLabel(t.month)} statement${(d => d ? ' · due ' + dateLabel(d) : '')(dueDate(t.card_id, t.month))} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}</div></div>
+      <div class="right b">${peso(balance(c))}</div></div>`).join('')}</div>` : ''}
     ${(() => { const cr = creditCharges(p.id); if (!cr.length) return '';
       return `<div class="sec">Credits (${cr.length}) · ${peso(-sum(cr, x => balance(x.c)))}</div>
       <p class="small muted" style="margin:0 2px 6px">Money in their favour — a refund, or a payment bigger than the item. It's already taken off "Still owes you". If a credit is the bank cancelling a straight purchase that was <b>converted to installment</b>, tap 🔁 on it instead — then it's paired with the purchase and nobody owes either.</p>
@@ -1020,7 +1030,7 @@ function personBody(p, d) {
         <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `<b>advance</b> · paid ${peso(received(c))} on ${peso(c.amount)}`}</div>
         ${Number(c.amount) < 0 ? `<button class="btn sm" style="margin-top:6px" data-action="openConvert" data-id="${t.id}">🔁 Converted to installment</button>` : ''}</div>
         <div class="right b" style="color:var(--paid)">${peso(-balance(c))}</div></div>`).join('')}</div>
-      ${items.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use advance / credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
+      ${allOpen.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use advance / credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
     <div class="sec">Recent payments</div>
     <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
     <div class="sec">Edit</div>
