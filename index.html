@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.8';
+const VERSION = '1.9';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -1172,16 +1172,12 @@ function viewMoney() {
 /* ---------------- CASH OUTLOOK: money coming in vs bills, to decide on short borrowing ---------------- */
 const moneyTabs = () => `<div class="seg" style="margin-top:6px"><button class="${UI.mTab !== 'out' ? 'on' : ''}" data-action="mTab" data-v="sum">Summary</button><button class="${UI.mTab === 'out' ? 'on' : ''}" data-action="mTab" data-v="out">Cash outlook</button></div>`;
 function billEstimate(cardId, m) {   // amount on the bill if saved, else app total (+ installment months not created yet)
+  const proj = S.installments.filter(p => { if (p.card_id !== cardId || p.status !== 'active') return false;
+    const no = monthDiff(m, p.first_month) + 1; return no >= 1 && no <= p.months && !(IX.txByInst.get(p.id) || []).some(t => t.installment_no === no); });
   const st = IX.stmt.get(cardId + '|' + m);
-  if (st && st.total_due != null && st.total_due !== '') return { amt: r2(st.total_due), est: false };
-  let amt = sum(S.transactions.filter(t => t.card_id === cardId && t.month === m && !isConv(t)), t => t.amount);
-  for (const p of S.installments) {
-    if (p.card_id !== cardId || p.status !== 'active') continue;
-    const no = monthDiff(m, p.first_month) + 1; if (no < 1 || no > p.months) continue;
-    if ((IX.txByInst.get(p.id) || []).some(t => t.installment_no === no)) continue;
-    amt += Number(p.monthly_amount);
-  }
-  return { amt: r2(amt), est: true };
+  if (st && st.total_due != null && st.total_due !== '') return { amt: r2(st.total_due), est: false, proj };
+  const amt = sum(S.transactions.filter(t => t.card_id === cardId && t.month === m && !isConv(t)), t => t.amount) + sum(proj, p => p.monthly_amount);
+  return { amt: r2(amt), est: true, proj };
 }
 function recurDates(r, from, to) {   // days a recurring item falls on, within [from, to]
   const out = [], start = r.start_date > from ? r.start_date : from;
@@ -1192,7 +1188,7 @@ function recurDates(r, from, to) {   // days a recurring item falls on, within [
   return out;
 }
 function outlookEvents(today, end) {
-  const ev = [];
+  const ev = [], owe = new Map(), advLeft = new Map();
   for (const e of S.entries) if (e.expected && e.entry_date <= end) {   // expected money / not paid yet (late ones count today)
     const late = e.entry_date < today;
     ev.push({ date: late ? today : e.entry_date, amt: e.kind === 'income' ? Number(e.amount) : -Number(e.amount), label: e.description || catName(e.category_id),
@@ -1207,14 +1203,27 @@ function outlookEvents(today, end) {
     if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
     const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
     ev.push({ date: due, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+    if (UI.oPromises) for (const p of bill.proj) for (const s of splitFromShares(p)) {   // riders' share of installment months not created yet (after any advance)
+      if (isHousehold(s.person_id) || !(s.amount > 0)) continue;
+      const adv = advLeft.has(s.person_id) ? advLeft.get(s.person_id) : personAdvance(s.person_id), use = Math.min(adv, s.amount); advLeft.set(s.person_id, r2(adv - use));
+      const amt = r2(s.amount - use); if (amt <= 0.004) continue;
+      const k = `${s.person_id}|${due}|to collect`, o = owe.get(k) || { amt: 0, n: 0, since: m }; o.amt = r2(o.amt + amt); o.n++; owe.set(k, o);
+    }
   }
-  let notCounted = 0; const prom = new Map();   // riders: only what they promised to pay on a date
-  for (const c of S.charges) {
-    if (isMe(c.person_id) || !live(c)) continue; const bal = balance(c); if (bal <= 0.004) continue;
-    if (UI.oPromises && c.promise_date && c.promise_date >= today && c.promise_date <= end) { const k = c.person_id + '|' + c.promise_date; prom.set(k, r2((prom.get(k) || 0) + bal)); }
-    else notCounted = r2(notCounted + bal);
+  // Riders: everything they still owe counts. On its promise date if one is set; otherwise by the due date of its bill.
+  // Overdue (or late promise) counts today. Household (you + partner) is left out: that money is already yours.
+  let notCounted = 0;
+  if (UI.oPromises) for (const c of S.charges) {
+    if (isHousehold(c.person_id) || !live(c)) continue; const bal = balance(c); if (bal <= 0.004) continue;
+    const t = IX.tx.get(c.transaction_id), due = c.promise_date ? null : dueDate(t.card_id, t.month);
+    const when = c.promise_date || due, late = !when || when < today, date = late ? today : when;
+    if (date > end) { notCounted = r2(notCounted + bal); continue; }
+    const why = c.promise_date ? (late ? 'promised, late' : 'promised') : (late ? 'overdue' : 'to collect');
+    const k = `${c.person_id}|${date}|${why}`, o = owe.get(k) || { amt: 0, n: 0, since: t.month };
+    o.amt = r2(o.amt + bal); o.n++; if (t.month < o.since) o.since = t.month; owe.set(k, o);
   }
-  for (const [k, amt] of prom) { const [pid, date] = k.split('|'); ev.push({ date, amt, label: personName(+pid), sub: 'Promised to pay you', action: `data-action="openPerson" data-id="${pid}"` }); }
+  for (const [k, o] of owe) { const [pid, date, why] = k.split('|');
+    ev.push({ date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? 'To collect, due with the bill' : why === 'promised' ? 'Promised to pay you' : 'Promised, late'} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
   ev.sort((a, b) => a.date.localeCompare(b.date) || (b.amt > 0) - (a.amt > 0));   // same day: money in first
   return { ev, notCounted };
 }
@@ -1267,15 +1276,16 @@ function viewOutlook() {
       ${S._exp ? `<button class="btn sm pri" data-action="newExpected" data-kind="income">＋ Expected money</button><button class="btn sm" data-action="newExpected" data-kind="expense">＋ Upcoming expense</button>` : ''}
       <button class="btn sm" data-action="openRecurring">Recurring (${S.recurring.filter(x => x.active).length})</button></div>
     ${S._exp ? '' : `<div class="card small" style="margin-top:10px"><b>One more setup step</b> to add expected money: run <b>database/4-expected.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data. Recurring salary and card bills already show below.</div>`}
-    <label class="small row" style="margin:10px 2px 0;gap:6px"><input type="checkbox" data-action="oProm" ${UI.oPromises ? 'checked' : ''}> Count riders' promised payments</label>
-    ${notCounted > 0.004 ? `<div class="small muted" style="margin:4px 2px 0 26px">Riders still owe you ${peso(notCounted)} with no promise date before ${dateLabel(rounds[rounds.length - 1].end)}. Not counted. Collecting some of it could mean you don't need to borrow.</div>` : ''}
+    <label class="small row" style="margin:10px 2px 0;gap:6px"><input type="checkbox" data-action="oProm" ${UI.oPromises ? 'checked' : ''}> Count money riders owe you</label>
+    <div class="small muted" style="margin:4px 2px 0 26px">${UI.oPromises ? `Counted on their promise date, or by the due date of the bill if there's none. Overdue amounts count today. If someone won't pay in time, set a later promise date on that transaction.` : 'Off: only your own money counts (worst case).'}</div>
+    ${notCounted > 0.004 ? `<div class="small muted" style="margin:4px 2px 0 26px">${peso(notCounted)} is promised or due after ${dateLabel(rounds[rounds.length - 1].end)}, so it isn't counted yet.</div>` : ''}
     <div class="sec">${M(r.m)} dues · in ${peso(r.inSum)} · out ${peso(r.outSum)}</div>
     <div class="card list">${startRow}
       ${r.rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
         ${x.got ? `<button class="btn sm" style="margin-top:6px" data-action="gotEntry" data-id="${x.got}">${x.kind === 'income' ? 'Got it' : 'Paid'}</button>` : ''}</div>
         <div class="right"><div class="b" style="${x.amt > 0 ? 'color:var(--paid)' : ''}">${x.amt > 0 ? '+' : '−'}${peso(Math.abs(x.amt))}</div><div class="small ${x.bal < -0.004 ? 'over' : 'muted'}">${peso(x.bal)}</div></div></div>`).join('')}
       ${r.rows.length ? '' : '<div class="empty">Nothing coming in or going out in this round yet.</div>'}</div>
-    <p class="small muted">Card bills are the full amount you pay the bank: the amount on the bill if you saved it, otherwise the app total. Riders' payments count only when they gave a promise date. Late expected money still counts until you tap Got it or delete it.</p>`;
+    <p class="small muted">Card bills are the full amount you pay the bank: the amount on the bill if you saved it, otherwise the app total. Money riders owe counts on its promise date, or by its bill's due date if there's none. Late expected money still counts until you tap Got it or delete it.</p>`;
 }
 document.addEventListener('change', e => {
   if (!e.target.matches?.('[data-cash]')) return;
