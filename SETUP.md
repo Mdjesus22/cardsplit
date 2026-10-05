@@ -138,7 +138,7 @@ What counts:
 2. Reload the app (Ctrl+Shift+R). Go to **Money** → **Cash outlook**.
 3. Type **Money you have now** (bank + cash + GCash). It's saved on that phone or laptop only, so update it when it changes.
 4. Tap **＋ Expected money** for salary or other money that hasn't come in yet (pick the date you expect it). Tap **＋ Upcoming expense** for something you'll pay soon (not card bills).
-5. The outlook adds up, day by day: expected money, recurring salary and bills, card bills you haven't ticked as paid, and riders' payments that have a **promise date**. It tells you if you'll run short, how much to borrow, by when, and when you can pay it back.
+5. The outlook works per round of card dues (tabs like **Oct dues**, **Nov dues**). Each round counts money coming in up to the **last card due date** of that month (e.g. Oct 19). Money after that goes to the next round's dues, and what's left (or still short) carries over. It adds expected money, recurring salary and bills, card bills you haven't ticked as paid, and riders' payments that have a **promise date**, then tells you if you'll run short, how much to borrow, by when, and when you can pay it back.
 6. When the money arrives, tap **Got it**, then update **Money you have now**.
 
 Expected money doesn't count in the Money **Summary** until you tap **Got it**.

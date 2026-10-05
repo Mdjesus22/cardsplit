@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.7';
+const VERSION = '1.8';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -277,7 +277,7 @@ let sb = null, db = null;
 let S = Object.fromEntries(TABLES.map(t => [t, []]));
 let IX = {};
 const UI = { view: 'home', month: addMonths(monthOf(todayISO()), -1), instFilter: 'active',
-             mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null, mTab: 'sum', oDays: 30, oPromises: true,
+             mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null, mTab: 'sum', oCycle: 0, oPromises: true,
              f: { scope: 'month', card: '', people: [], status: '', q: '' }, cf: { card: '', scope: 'month' } };
 
 // local mutations (DB first, then local copy)
@@ -1218,39 +1218,63 @@ function outlookEvents(today, end) {
   ev.sort((a, b) => a.date.localeCompare(b.date) || (b.amt > 0) - (a.amt > 0));   // same day: money in first
   return { ev, notCounted };
 }
+// Rounds of card dues: each round ends on the LAST card due date of that month (e.g. Oct 19).
+// Money that comes in up to that date pays that round; later money goes to the next round.
+function dueRounds(today) {
+  const out = [];
+  for (let k = 0; out.length < 3 && k < 8; k++) {
+    const D = addMonths(monthOf(today), k), ds = S.cards.filter(c => c.active).map(c => dueDate(c.id, addMonths(D, -1))).filter(Boolean).sort();
+    if (!ds.length) continue; const end = ds[ds.length - 1];
+    if (end < today || (out.length && end <= out[out.length - 1].end)) continue;
+    out.push({ m: D, end });
+  }
+  if (!out.length) out.push({ m: monthOf(today), end: addDays(today, 30) });
+  return out;
+}
 function viewOutlook() {
   if (UI.cash === undefined) { try { const s = JSON.parse(localStorage.getItem('cs_cash') || 'null'); UI.cash = s ? Number(s.v) : null; UI.cashOn = s?.on || ''; } catch { UI.cash = null; } }
-  const today = todayISO(), end = addDays(today, UI.oDays);
-  const { ev, notCounted } = outlookEvents(today, end);
-  let bal = r2(UI.cash || 0), min = bal, minDate = today, shortDate = null, iMin = -1;
-  const rows = ev.map((x, i) => { bal = r2(bal + x.amt); if (bal < min - 0.004) { min = bal; minDate = x.date; iMin = i; } if (bal < -0.004 && !shortDate) shortDate = x.date; return { ...x, bal }; });
-  const back = min < -0.004 ? rows.slice(iMin + 1).find(x => x.bal >= -0.004) : null;
-  const inSum = sum(ev.filter(x => x.amt > 0), x => x.amt), outSum = -sum(ev.filter(x => x.amt < 0), x => x.amt);
-  const verdict = min < -0.004
-    ? `<div class="card t-rose"><div class="small muted">You may run short</div><div class="big over">${peso(min)}</div>
-        <div class="small" style="margin-top:4px">Lowest on <b>${dateLabel(minDate)}</b>. You'd need to borrow about <b>${peso(-min)}</b> by <b>${dateLabel(shortDate || today)}</b>.
-        ${back ? `You could pay it back on <b>${dateLabel(back.date)}</b>, after ${esc(back.label)} (${daysBetween(shortDate || today, back.date)} days).` : `You won't be back above ₱0 within these ${UI.oDays} days.`}</div></div>`
-    : `<div class="card t-mint"><div class="small muted">You're covered</div><div class="big">${peso(min)}</div>
-        <div class="small" style="margin-top:4px">That's your lowest point, on <b>${dateLabel(minDate)}</b>. No need to borrow in the next ${UI.oDays} days.</div></div>`;
+  const today = todayISO(), rounds = dueRounds(today), M = m => MON[+m.slice(5, 7) - 1];
+  const { ev, notCounted } = outlookEvents(today, rounds[rounds.length - 1].end);
+  let carry = r2(UI.cash || 0), from = today;
+  for (const [i, r] of rounds.entries()) {   // running balance inside each round; what's left (or short) carries to the next
+    r.from = from; r.start = carry; let bal = carry, min = carry, minDate = from, iMin = -1, shortDate = carry < -0.004 ? from : null;
+    r.rows = ev.filter(x => x.date >= from && x.date <= r.end).map((x, j) => { bal = r2(bal + x.amt); if (bal < min - 0.004) { min = bal; minDate = x.date; iMin = j; } if (bal < -0.004 && !shortDate) shortDate = x.date; return { ...x, bal }; });
+    Object.assign(r, { left: bal, min, minDate, shortDate, back: min < -0.004 ? r.rows.slice(iMin + 1).find(x => x.bal >= -0.004) : null,
+      inSum: sum(r.rows.filter(x => x.amt > 0), x => x.amt), outSum: -sum(r.rows.filter(x => x.amt < 0), x => x.amt), next: rounds[i + 1]?.m || addMonths(r.m, 1) });
+    carry = bal; from = addDays(r.end, 1);
+  }
+  const ci = Math.min(UI.oCycle, rounds.length - 1), r = rounds[ci], prev = rounds[ci - 1];
+  const rowMin = r.rows.length ? Math.min(...r.rows.map(x => x.bal)) : r.start;   // short = this round's money doesn't cover its dues (+ any carried loan)
+  const payback = r.start < -0.004 ? r.rows.find(x => x.bal >= -0.004) : null;
+  const loanNote = payback ? ` You pay back the ${peso(-r.start)} borrowed for ${M(prev.m)} dues on <b>${dateLabel(payback.date)}</b>, after ${esc(payback.label)}.` : '';
+  const verdict = rowMin < -0.004
+    ? `<div class="card t-rose"><div class="small muted">Short for ${M(r.m)} dues</div><div class="big over">${peso(r.min)}</div>
+        <div class="small" style="margin-top:4px">${ci && r.start < -0.004 && r.minDate === r.from ? `You start this round ${peso(-r.start)} short (borrowed for ${M(prev.m)} dues).` : `Lowest on <b>${dateLabel(r.minDate)}</b>. You'd need about <b>${peso(-r.min)}</b> by <b>${dateLabel(r.shortDate || r.from)}</b>${r.start < -0.004 ? `, including the ${peso(-r.start)} borrowed for ${M(prev.m)} dues` : ''}.`}
+        ${r.back ? `You could pay it back on <b>${dateLabel(r.back.date)}</b>, after ${esc(r.back.label)}.` : `Money after ${dateLabel(r.end)} goes to ${M(r.next)} dues, so the loan is paid back from there.`}</div></div>`
+    : `<div class="card t-mint"><div class="small muted">Enough for ${M(r.m)} dues</div><div class="big">${peso(r.left)} left</div>
+        <div class="small" style="margin-top:4px">After the last due date (${dateLabel(r.end)}). It carries to ${M(r.next)} dues.${loanNote}</div></div>`;
+  const startRow = ci === 0
+    ? `<div class="item"><div class="grow"><div class="b">Now</div><div class="small muted">${dateLabel(today)} · money you have</div></div><div class="right b">${peso(r.start)}</div></div>`
+    : `<div class="item"><div class="grow"><div class="b">${r.start < -0.004 ? `Borrowed for ${M(prev.m)} dues` : `Left from ${M(prev.m)} dues`}</div><div class="small muted">${dateLabel(r.from)} · carried over</div></div><div class="right b ${r.start < -0.004 ? 'over' : ''}">${peso(r.start)}</div></div>`;
   return `${moneyTabs()}
     <div class="card" style="margin-top:10px"><label class="f" style="margin:0"><span>Money you have now (bank + cash + GCash)</span>
       <input class="in" type="number" inputmode="decimal" step="0.01" data-cash value="${UI.cash ?? ''}" placeholder="e.g. 12000"></label>
       <div class="small muted" style="margin-top:4px">${UI.cash == null ? 'Type it in to start (counted as ₱0 for now). ' : UI.cashOn ? `Updated ${dateLabel(UI.cashOn)}. ` : ''}Saved on this device only.</div></div>
-    <div class="seg" style="margin-top:10px">${[30, 60, 90].map(n => `<button class="${UI.oDays === n ? 'on' : ''}" data-action="oDays" data-v="${n}">Next ${n} days</button>`).join('')}</div>
+    <div class="seg" style="margin-top:10px">${rounds.map((x, i) => `<button class="${i === ci ? 'on' : ''}" data-action="oCycle" data-v="${i}">${M(x.m)} dues</button>`).join('')}</div>
+    <div class="small muted" style="margin:6px 2px 0">Money in from <b>${dateLabel(r.from)}</b> to <b>${dateLabel(r.end)}</b>, the last card due date. Money after that goes to ${M(r.next)} dues.</div>
     <div style="margin-top:10px">${verdict}</div>
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
       ${S._exp ? `<button class="btn sm pri" data-action="newExpected" data-kind="income">＋ Expected money</button><button class="btn sm" data-action="newExpected" data-kind="expense">＋ Upcoming expense</button>` : ''}
-      <button class="btn sm" data-action="openRecurring">Recurring (${S.recurring.filter(r => r.active).length})</button></div>
+      <button class="btn sm" data-action="openRecurring">Recurring (${S.recurring.filter(x => x.active).length})</button></div>
     ${S._exp ? '' : `<div class="card small" style="margin-top:10px"><b>One more setup step</b> to add expected money: run <b>database/4-expected.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data. Recurring salary and card bills already show below.</div>`}
     <label class="small row" style="margin:10px 2px 0;gap:6px"><input type="checkbox" data-action="oProm" ${UI.oPromises ? 'checked' : ''}> Count riders' promised payments</label>
-    ${notCounted > 0.004 ? `<div class="small muted" style="margin:4px 2px 0 26px">Riders still owe you ${peso(notCounted)} with no promise date in these ${UI.oDays} days. Not counted. Collecting some of it could mean you don't need to borrow.</div>` : ''}
-    <div class="sec">Day by day · in ${peso(inSum)} · out ${peso(outSum)}</div>
-    <div class="card list">
-      <div class="item"><div class="grow"><div class="b">Now</div><div class="small muted">${dateLabel(today)} · money you have</div></div><div class="right b">${peso(UI.cash || 0)}</div></div>
-      ${rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
+    ${notCounted > 0.004 ? `<div class="small muted" style="margin:4px 2px 0 26px">Riders still owe you ${peso(notCounted)} with no promise date before ${dateLabel(rounds[rounds.length - 1].end)}. Not counted. Collecting some of it could mean you don't need to borrow.</div>` : ''}
+    <div class="sec">${M(r.m)} dues · in ${peso(r.inSum)} · out ${peso(r.outSum)}</div>
+    <div class="card list">${startRow}
+      ${r.rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
         ${x.got ? `<button class="btn sm" style="margin-top:6px" data-action="gotEntry" data-id="${x.got}">${x.kind === 'income' ? 'Got it' : 'Paid'}</button>` : ''}</div>
         <div class="right"><div class="b" style="${x.amt > 0 ? 'color:var(--paid)' : ''}">${x.amt > 0 ? '+' : '−'}${peso(Math.abs(x.amt))}</div><div class="small ${x.bal < -0.004 ? 'over' : 'muted'}">${peso(x.bal)}</div></div></div>`).join('')}
-      ${rows.length ? '' : '<div class="empty">Nothing coming in or going out yet. Add expected money or a recurring salary.</div>'}</div>
+      ${r.rows.length ? '' : '<div class="empty">Nothing coming in or going out in this round yet.</div>'}</div>
     <p class="small muted">Card bills are the full amount you pay the bank: the amount on the bill if you saved it, otherwise the app total. Riders' payments count only when they gave a promise date. Late expected money still counts until you tap Got it or delete it.</p>`;
 }
 document.addEventListener('change', e => {
@@ -1738,7 +1762,7 @@ const A = {
   moneyPick: el => { UI.mSel = el.dataset.m; render(); },
   mHalf: el => { UI.mHalf = +el.dataset.v; render(); },
   mTab: el => { UI.mTab = el.dataset.v; render(); scrollTo(0, 0); },
-  oDays: el => { UI.oDays = +el.dataset.v; render(); },
+  oCycle: el => { UI.oCycle = +el.dataset.v; render(); },
   oProm: () => { UI.oPromises = !UI.oPromises; render(); },
   newExpected: el => openEntry(null, el.dataset.kind, { expected: true }),
   gotEntry: async el => { const e = S.entries.find(x => x.id === +el.dataset.id); if (!e) return;
