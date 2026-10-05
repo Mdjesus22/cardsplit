@@ -12,6 +12,7 @@ You will make 2 free accounts:
 | `../cardsplit-PRIVATE/2-seed-PRIVATE.sql` | Your Jan 2025 – Feb 2026 data from Sheet20. Kept **outside** this repo on purpose. | Supabase SQL Editor (run once). **Never upload to GitHub.** |
 | `database/3-money.sql` | Money tab tables (income, expenses, recurring) | Supabase SQL Editor (run once, Part F) |
 | `database/4-expected.sql` | Lets you add expected money (not received yet) | Supabase SQL Editor (run once, Part G) |
+| `database/5-safety-box.sql` | Safety box: your savings and loans paid back into it | Supabase SQL Editor (run once, Part H) |
 | `index.html` | The app | GitHub (this repo) |
 | `.github/workflows/keep-alive.yml` | Daily ping so Supabase never pauses | GitHub (this repo) |
 
@@ -141,7 +142,19 @@ What counts:
 5. The outlook works per round of card dues (tabs like **Oct dues**, **Nov dues**). Each round counts money coming in up to the **last card due date** of that month (e.g. Oct 19). Money after that goes to the next round's dues, and what's left (or still short) carries over. It adds expected money, recurring salary and bills, card bills you haven't ticked as paid, and **everything riders owe you** (on their promise date, or by the due date of the bill if there's none; overdue amounts count today), then tells you if you'll run short, how much to borrow, by when, and when you can pay it back.
 6. When the money arrives, tap **Got it**, then update **Money you have now**.
 
-Expected money doesn't count in the Money **Summary** until you tap **Got it**.
+Expected money doesn't count in the Money **Summary** until you tap **Got it**. Recurring income (salary) is added as expected too, so tap **Got it** when it arrives.
+
+## Part H — Safety box (v2.3)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/5-safety-box.sql` and click **Run**. It only adds two new tables. It's safe to run twice.
+2. Reload the app (Ctrl+Shift+R). Go to **Money** → **Safety box** (or ☰ → Safety box).
+3. Tap **＋ Put money in** and enter what's in the box now (note: "Starting balance").
+4. **Card ride paid with your own money** (e.g. Mami Pilar's): open the ride on **Cards** → under her name tap **Pay this from the safety box (installments)** → set months, interest per month and first payment → **Save loan**.
+   - The ride stays on its statement, marked **Safety box**. The box pays that part of the bill (it shows in the Cash outlook as money in on the due date).
+   - It's no longer counted as "still owes you" for the card; People shows it as a separate safety box loan.
+5. **Cash you lend** from the box: **Safety box** → **＋ Lend money**.
+6. When they pay you back, open the loan → **Record a payment back into the box**. Paybacks go into the box only. They don't count in the Money summary or the Cash outlook.
+7. "Money you have now" in the Cash outlook should **not** include the safety box.
 
 ---
 

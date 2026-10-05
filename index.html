@@ -67,6 +67,7 @@ nav.bottom button.add .ic{width:48px;height:48px;border-radius:50%;background:va
 .chip.paid{background:var(--paid-bg);color:var(--paid)}
 .chip.partial{background:var(--part-bg);color:var(--part)}
 .chip.unpaid{background:var(--unpaid-bg);color:var(--unpaid)}
+.chip.vault{background:var(--t-sky);color:var(--brand)}
 .chip.brand{background:var(--brand-soft);color:var(--brand)}
 .pill{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--mine-bg);color:var(--mine)}
 .pill.red{background:var(--unpaid-bg);color:var(--unpaid)}
@@ -194,17 +195,18 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.1';
+const VERSION = '2.3';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
-const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
+const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
 const OPT_TABLES = ['categories','recurring','entries'];   // Money tab — created by 3-money.sql
-const SETNULL = { recurring:[['entries','recurring_id']] };
+const VAULT_TABLES = ['vault_loans','vault_moves'];           // Safety box — created by 5-safety-box.sql
+const SETNULL = { recurring:[['entries','recurring_id']], charges:[['vault_loans','charge_id']] };
 const CASCADE = { transactions:[['charges','transaction_id']], charges:[['collections','charge_id']],
-                  installments:[['installment_shares','installment_id'],['transactions','installment_id']] };
+                  installments:[['installment_shares','installment_id'],['transactions','installment_id']], vault_loans:[['vault_moves','loan_id']] };
 const DEFAULTS = { cards:{active:true}, people:{kind:'person',active:true}, statements:{paid_to_bank:false},
                    installments:{status:'active'}, transactions:{source:'manual'},
-                   categories:{active:true, sort:0}, entries:{planned:true, expected:false}, recurring:{active:true} };
+                   categories:{active:true, sort:0}, entries:{planned:true, expected:false}, recurring:{active:true}, vault_loans:{status:'active', interest_per_month:0} };
 
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
@@ -262,7 +264,7 @@ function makeSupabaseDB(sb) {
             rows = rows.concat(data); if (data.length < 1000) break; from += 1000;
           }
           out[t] = rows;
-        } catch (e) { if (OPT_TABLES.includes(t)) out[t] = null; else throw e; }   // Money tables not created yet
+        } catch (e) { if (OPT_TABLES.includes(t) || VAULT_TABLES.includes(t)) out[t] = null; else throw e; }   // optional tables not created yet
       }));
       return out;
     },
@@ -299,9 +301,12 @@ function reindex() {
   IX.stmt = new Map(S.statements.map(s => [s.card_id + '|' + s.month, s]));
   IX.me = (S.people.find(p => p.kind === 'me') || {}).id;
   IX.cat = new Map((S.categories || []).map(r => [r.id, r]));
+  IX.vaultByCharge = new Map((S.vault_loans || []).filter(l => l.charge_id).map(l => [l.charge_id, l]));
+  IX.movesByLoan = groupBy(S.vault_moves || [], 'loan_id');
 }
 const received = ch => sum(IX.collByCharge.get(ch.id) || [], c => c.amount);
-const balance = ch => r2(Number(ch.amount) - received(ch));
+const inVault = ch => !!(IX.vaultByCharge && IX.vaultByCharge.get(ch.id));   // paid from the safety box
+const balance = ch => inVault(ch) ? 0 : r2(Number(ch.amount) - received(ch));
 const isMe = pid => IX.person.get(pid)?.kind === 'me';
 const personName = pid => IX.person.get(pid)?.name ?? '?';
 // Straight purchase converted to installment (or fully refunded): the purchase and its cancelling credit
@@ -337,11 +342,12 @@ async function applyAdvances(charges) {
 function chargeStatus(ch) {
   if (!live(ch)) return 'converted';
   if (isMe(ch.person_id)) return 'mine';
+  if (inVault(ch)) return 'vault';
   const b = balance(ch);
   if (b <= 0.004) return 'paid';
   return received(ch) > 0.004 ? 'partial' : 'unpaid';
 }
-const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine', converted: 'Converted' };
+const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine', converted: 'Converted', vault: 'Safety box' };
 const cardLabel = id => { const c = IX.card.get(id); return c ? (c.bank || c.code) + (c.last4 ? ' ••' + c.last4 : '') : '?'; };
 const cardCode = id => IX.card.get(id)?.code ?? '?';
 function dueDate(cardId, month) {
@@ -460,7 +466,7 @@ function render() {
     <header class="top">
       <button class="iconbtn" data-action="menu" aria-label="Menu">${icon('menu')}</button>
       <h1>${LOGO}CardSplit${DEMO ? ' <span class="pill amber">demo</span>' : ''}</h1>
-      ${UI.view === 'people' || (UI.view === 'money' && UI.mTab === 'out') ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">${icon('left')}</button><span>${monthLabel(UI.view === 'money' ? UI.mMonth : UI.month)}</span><button data-action="nextMonth" aria-label="Next month">${icon('right')}</button></div>`}
+      ${UI.view === 'people' || (UI.view === 'money' && UI.mTab !== 'sum') ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">${icon('left')}</button><span>${monthLabel(UI.view === 'money' ? UI.mMonth : UI.month)}</span><button data-action="nextMonth" aria-label="Next month">${icon('right')}</button></div>`}
     </header>
     <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, chart: viewChart, money: viewMoney, people: viewPeople })[UI.view]()}</main>
     <nav class="bottom"><div class="in">
@@ -556,7 +562,7 @@ function txItem(t) {
   return `<div class="item" data-action="openTx" data-id="${t.id}">
     <div class="grow"><div class="b ell">${esc(t.description)}</div>
       <div class="small muted">${t.txn_date ? dateLabel(t.txn_date) : monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
-      <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' || st === 'converted' ? '' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
+      <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' || st === 'converted' ? '' : st === 'vault' ? ' ' + peso(c.amount) + ' · safety box' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
     <div class="right b">${peso(t.amount)}</div></div>`;
 }
 function viewTx() {
@@ -686,8 +692,12 @@ function chargeBox(d, c, i, people) {
       <button class="iconbtn" data-action="rmCharge" data-i="${i}" aria-label="Remove">✕</button>
     </div>
     ${saved && !isMe(c.person_id) ? `
-      <div class="pay"><span><span class="chip ${st}">${STATUS_LABEL[st]}</span> Received ${peso(received(saved))} · Left <b>${peso(balance(saved))}</b></span>
+      ${st === 'vault' ? (() => { const L = IX.vaultByCharge.get(saved.id), v = loanInfo(L);
+        return `<div class="pay"><span><span class="chip vault">Safety box</span> Paid from your safety box. Paid back ${peso(v.back)} of ${peso(v.total)}</span>
+          <button class="btn sm" data-action="openLoan" data-id="${L.id}">Open</button></div>`; })()
+      : `<div class="pay"><span><span class="chip ${st}">${STATUS_LABEL[st]}</span> Received ${peso(received(saved))} · Left <b>${peso(balance(saved))}</b></span>
         <button class="btn sm" data-action="addPay" data-charge="${saved.id}">+ Payment</button></div>
+      ${S._vault && live(saved) && balance(saved) > 0.004 ? `<button class="linkish small" style="margin-top:6px" data-action="newLoan" data-charge="${saved.id}">Pay this from the safety box (installments)</button>` : ''}`}
       ${pays.length ? `<div class="plist">${pays.map(p => `<div><span>${dateLabelY(p.received_on)} · ${peso(p.amount)}${p.note ? ' · ' + esc(p.note) : ''}</span><span>${Number(p.amount) > 0 && !SYS_PAY.has(p.note) ? `<button class="linkish" data-action="editPay" data-id="${p.id}">edit</button> · ` : ''}<button class="linkish" data-action="rmPay" data-id="${p.id}">remove</button></span></div>`).join('')}</div>` : ''}
       <div class="extra">
         <input class="in" type="date" data-ci="${i}" data-ck="promise_date" value="${esc(c.promise_date)}" title="Will pay the rest on">
@@ -920,7 +930,7 @@ function viewPeople() {
     .sort((a, b) => (b.s.bal - a.s.bal) || a.p.name.localeCompare(b.p.name));
   const owing = ppl.filter(x => x.s.bal > 0.004), clear = ppl.filter(x => x.s.bal <= 0.004);
   const item = ({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow"><div class="b">${esc(p.name)} ${p.kind !== 'person' ? `<span class="pill">${p.kind}</span>` : ''}</div>
-    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.adv > 0.004 ? ` · <span style="color:var(--paid)">advance ${peso(s.adv)}</span>` : ''}${s.credit - s.adv > 0.004 ? ` · credit ${peso(r2(s.credit - s.adv))}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
+    <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.adv > 0.004 ? ` · <span style="color:var(--paid)">advance ${peso(s.adv)}</span>` : ''}${s.credit - s.adv > 0.004 ? ` · credit ${peso(r2(s.credit - s.adv))}` : ''}${S._vault && vaultLeft(p.id) > 0.004 ? ` · safety box ${peso(vaultLeft(p.id))}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
   return `
     <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (all months)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div></div><button class="btn sm" data-action="newPerson">+ Person</button></div>
     ${(() => { const adv = ppl.filter(x => x.s.adv > 0.004).sort((a, b) => b.s.adv - a.s.adv), tot = sum(adv, x => x.s.adv);
@@ -991,7 +1001,8 @@ function personBody(p, d) {
   return `
     <div class="card"><div class="small muted">${s.bal < -0.004 ? 'They have a credit of' : 'Still owes you'}</div><div class="big ${s.bal > 0.004 ? 'over' : ''}" style="${s.bal < -0.004 ? 'color:var(--paid)' : ''}">${peso(Math.abs(s.bal))}</div>
       ${s.credits ? `<div class="small" style="margin-top:4px">= unpaid items <b>${peso(s.unpaid)}</b> − credits <b style="color:var(--paid)">${peso(s.credit)}</b></div>` : ''}
-      ${s.adv > 0.004 ? `<div class="small" style="margin-top:4px">Advance (paid ahead): <b style="color:var(--paid)">${peso(s.adv)}</b> · used on their next installment months</div>` : ''}</div>
+      ${s.adv > 0.004 ? `<div class="small" style="margin-top:4px">Advance (paid ahead): <b style="color:var(--paid)">${peso(s.adv)}</b> · used on their next installment months</div>` : ''}
+      ${S._vault && vaultLeft(p.id) > 0.004 ? `<div class="small" style="margin-top:4px">Safety box loan: still to pay back <b>${peso(vaultLeft(p.id))}</b> (not included above) · <button class="linkish" data-action="goVault">open</button></div>` : ''}</div>
     ${p.kind !== 'me' ? `<div class="card"><div class="b">Record a payment</div>
       <div class="grid2"><label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="pay" value="${esc(d.pay)}"></label>
       <label class="f"><span>Date</span><input class="in" type="date" data-k="pay_on" value="${d.pay_on}"></label></div>
@@ -1143,6 +1154,7 @@ function viewMoney() {
   if (!S._money) return `<div class="card" style="margin-top:10px"><div class="b">One more setup step</div>
     <p class="small">Run <b>database/3-money.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data.</p></div>`;
   if (UI.mTab === 'out') return viewOutlook();
+  if (UI.mTab === 'vault') return viewVault();
   const p = moneyPeriod();
   const items = moneyItems(p.from, p.to);
   const inc = items.filter(x => x.kind === 'income'), exp = items.filter(x => x.kind === 'expense');
@@ -1182,7 +1194,7 @@ function viewMoney() {
     <div class="card list">${entries.map(e => entryItem(e)).join('') || '<div class="empty">No entries yet. Tap ＋ Expense or ＋ Income.</div>'}</div>`;
 }
 /* ---------------- CASH OUTLOOK: money coming in vs bills, to decide on short borrowing ---------------- */
-const moneyTabs = () => `<div class="seg" style="margin-top:6px"><button class="${UI.mTab !== 'out' ? 'on' : ''}" data-action="mTab" data-v="sum">Summary</button><button class="${UI.mTab === 'out' ? 'on' : ''}" data-action="mTab" data-v="out">Cash outlook</button></div>`;
+const moneyTabs = () => `<div class="seg" style="margin-top:6px">${[['sum', 'Summary'], ['out', 'Cash outlook'], ['vault', 'Safety box']].map(([v, l]) => `<button class="${(UI.mTab || 'sum') === v ? 'on' : ''}" data-action="mTab" data-v="${v}">${l}</button>`).join('')}</div>`;
 function billEstimate(cardId, m) {   // amount on the bill if saved, else app total (+ installment months not created yet)
   const proj = S.installments.filter(p => { if (p.card_id !== cardId || p.status !== 'active') return false;
     const no = monthDiff(m, p.first_month) + 1; return no >= 1 && no <= p.months && !(IX.txByInst.get(p.id) || []).some(t => t.installment_no === no); });
@@ -1211,7 +1223,15 @@ function outlookEvents(today, rounds) {
   }
   for (const r of S.recurring) if (r.active) for (const iso of recurDates(r, addDays(today, 1), end)) {   // salary etc. after today
     if (S.entries.some(e => e.recurring_id === r.id && e.entry_date === iso)) continue;
-    ev.push({ r: byDate(iso), date: iso, amt: r.kind === 'income' ? Number(r.amount) : -Number(r.amount), label: r.description, sub: 'Recurring', action: `data-action="openRec" data-id="${r.id}"` });
+    ev.push({ r: byDate(iso), date: iso, amt: r.kind === 'income' ? Number(r.amount) : -Number(r.amount), label: r.description, sub: r.kind === 'income' ? 'Expected · recurring' : 'Recurring', action: `data-action="openRec" data-id="${r.id}"` });
+  }
+  for (const m of S.vault_moves || []) {   // future safety-box moves that touch YOUR money (paybacks never do: they go into the box)
+    if (m.kind === 'repay' || m.move_date > end || (m.kind === 'lend' ? m.move_date < today : m.move_date <= today)) continue;   // today or earlier: already done
+    const L = m.loan_id ? (S.vault_loans || []).find(l => l.id === m.loan_id) : null;
+    if (m.kind === 'lend' && !L?.charge_id) continue;   // cash lent straight from the box to someone
+    const inn = m.kind !== 'deposit';
+    ev.push({ r: byDate(m.move_date), date: m.move_date, amt: inn ? Number(m.amount) : -Number(m.amount), label: L ? `From safety box · ${personName(L.person_id)}` : inn ? 'From safety box' : 'Into safety box',
+      sub: L ? `${L.item} · pays that part of the card bill` : (m.note || 'Safety box'), action: `data-action="goVault"` });
   }
   rounds.forEach((rd, i) => { for (const c of S.cards) {   // card bills of this round's statement: full amount you pay the bank
     const m = rd.s, due = dueDate(c.id, m); if (due && due < today) continue;   // due date passed: treated as paid
@@ -1285,7 +1305,7 @@ function viewOutlook() {
     ? `<div class="item"><div class="grow"><div class="b">Now</div><div class="small muted">${dateLabel(today)} · money you have</div></div><div class="right b">${peso(r.start)}</div></div>`
     : `<div class="item"><div class="grow"><div class="b">${r.start < -0.004 ? `Borrowed for ${M(prev.m)} dues` : `Left from ${M(prev.m)} dues`}</div><div class="small muted">${dateLabel(r.from)} · carried over</div></div><div class="right b ${r.start < -0.004 ? 'over' : ''}">${peso(r.start)}</div></div>`;
   return `${moneyTabs()}
-    <div class="card" style="margin-top:10px"><label class="f" style="margin:0"><span>Money you have now (bank + cash + GCash)</span>
+    <div class="card" style="margin-top:10px"><label class="f" style="margin:0"><span>Money you have now (bank + cash + GCash, not the safety box)</span>
       <input class="in" type="number" inputmode="decimal" step="0.01" data-cash value="${UI.cash ?? ''}" placeholder="e.g. 12000"></label>
       <div class="small muted" style="margin-top:4px">${UI.cash == null ? 'Type it in to start (counted as ₱0 for now). ' : UI.cashOn ? `Updated ${dateLabel(UI.cashOn)}. ` : ''}Saved on this device only.</div></div>
     <div class="seg" style="margin-top:10px">${rounds.map((x, i) => `<button class="${i === ci ? 'on' : ''}" data-action="oCycle" data-v="${i}">${M(x.m)} dues</button>`).join('')}</div>
@@ -1316,6 +1336,116 @@ document.addEventListener('change', e => {
   try { localStorage.setItem('cs_cash', JSON.stringify({ v: UI.cash, on: UI.cashOn })); } catch {}
   render();
 });
+/* ---------------- SAFETY BOX: your own savings + loans paid back into it ---------------- */
+const addMonthsDay = (iso, k) => { const m = addMonths(monthOf(iso), k), [y, mo] = m.split('-').map(Number); return `${m.slice(0, 8)}${pad(Math.min(+iso.slice(8, 10), new Date(y, mo, 0).getDate()))}`; };
+function loanInfo(L) {   // monthly schedule: equal share of the amount lent + fixed interest; paybacks fill the oldest month first
+  const n = L.months, P = Number(L.principal), I = Number(L.interest_per_month || 0), base = Math.floor(P / n * 100) / 100;
+  const moves = (IX.movesByLoan && IX.movesByLoan.get(L.id)) || [], back = sum(moves.filter(m => m.kind === 'repay'), m => m.amount);
+  let left = back; const rows = [];
+  for (let k = 1; k <= n; k++) { const amt = r2((k === n ? r2(P - base * (n - 1)) : base) + I), paid = r2(Math.min(left, amt)); left = r2(left - paid);
+    rows.push({ k, date: addMonthsDay(L.first_due, k - 1), amt, paid, st: paid >= amt - 0.004 ? 'paid' : paid > 0.004 ? 'partial' : 'unpaid' }); }
+  const total = sum(rows, r => r.amt);
+  return { rows, total, back, left: r2(total - back), next: rows.find(r => r.st !== 'paid') };
+}
+const vaultLeft = pid => sum((S.vault_loans || []).filter(l => l.person_id === pid), l => Math.max(0, loanInfo(l).left));
+const vaultBalance = () => sum(S.vault_moves || [], m => (m.kind === 'deposit' || m.kind === 'repay' ? 1 : -1) * Number(m.amount));
+const MOVE_LABEL = { deposit: 'Deposit', withdraw: 'Taken out', lend: 'Lent', repay: 'Paid back' };
+const loanCalcText = d => { const P = num(d.principal) || 0, n = Math.max(1, Math.round(num(d.months) || 1)), I = num(d.interest) || 0; if (!P) return '';
+  return `Each month: <b>${peso(r2(P / n + I))}</b> (${peso(r2(P / n))} + ${peso(I)} interest) · total back <b>${peso(r2(P + I * n))}</b>`; };
+function viewVault() {
+  if (!S._vault) return `${moneyTabs()}<div class="card" style="margin-top:10px"><div class="b">One more setup step</div>
+    <p class="small">Run <b>database/5-safety-box.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data.</p></div>`;
+  const today = todayISO(), m = monthOf(today), loans = S.vault_loans.map(L => ({ L, v: loanInfo(L) })).sort((a, b) => ((a.v.left > 0.004 ? 0 : 1) - (b.v.left > 0.004 ? 0 : 1)) || b.L.id - a.L.id);
+  const out = sum(loans, x => Math.max(0, x.v.left));
+  const dueNow = sum(loans.flatMap(x => x.v.rows.filter(r => r.st !== 'paid' && r.date < addMonths(m, 1))), r => r.amt - r.paid);
+  const moves = [...S.vault_moves].sort((a, b) => b.move_date.localeCompare(a.move_date) || b.id - a.id).slice(0, 40);
+  return `${moneyTabs()}
+    <div class="tiles" style="margin-top:10px">
+      <div class="tile t-mint"><div class="lbl">In the safety box</div><div class="val">${peso(vaultBalance())}</div></div>
+      <div class="tile t-lav"><div class="lbl">Lent out, to come back</div><div class="val">${peso(out)}</div></div>
+    </div>
+    ${dueNow > 0.004 ? `<div class="small muted" style="margin:8px 2px 0">Due back by the end of ${MON[+m.slice(5, 7) - 1]}: <b>${peso(dueNow)}</b></div>` : ''}
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      <button class="btn sm pri" data-action="newLoan">＋ Lend money</button>
+      <button class="btn sm" data-action="vaultMove" data-kind="deposit">＋ Put money in</button>
+      <button class="btn sm" data-action="vaultMove" data-kind="withdraw">− Take money out</button></div>
+    <p class="small muted" style="margin:8px 2px 0">Paybacks go into the box. They don't count in your Money summary or the Cash outlook. To pay a card ride with this money, open the ride on Cards and tap "Pay this from the safety box".</p>
+    <div class="sec">Loans (${loans.length})</div>
+    <div class="card list">${loans.map(({ L, v }) => `<div class="item" data-action="openLoan" data-id="${L.id}"><div class="grow"><div class="b ell">${esc(personName(L.person_id))} · ${esc(L.item)}</div>
+      <div class="small muted">${peso(v.back)} of ${peso(v.total)} back · ${L.months} month${L.months === 1 ? '' : 's'}${Number(L.interest_per_month) ? ` · ${peso(L.interest_per_month)} interest/month` : ''}${v.next ? ` · next ${peso(v.next.amt - v.next.paid)} on ${dateLabel(v.next.date)}${v.next.date < today ? ' (late)' : ''}` : ''}</div></div>
+      <div class="right"><div class="b">${v.left > 0.004 ? peso(v.left) : 'Paid ✓'}</div>${L.charge_id ? '<span class="chip vault">card ride</span>' : ''}</div></div>`).join('') || '<div class="empty">No loans yet.</div>'}</div>
+    <div class="sec">History</div>
+    <div class="card list">${moves.map(x => { const L = x.loan_id ? S.vault_loans.find(l => l.id === x.loan_id) : null, plus = x.kind === 'deposit' || x.kind === 'repay';
+      return `<div class="item" ${L ? `data-action="openLoan" data-id="${L.id}"` : `data-action="vaultMove" data-id="${x.id}"`}><div class="grow"><div class="b">${MOVE_LABEL[x.kind]}${L ? ` · ${esc(personName(L.person_id))}` : ''}</div>
+        <div class="small muted">${dateLabelY(x.move_date)}${L ? ' · ' + esc(L.item) : ''}${x.note ? ' · ' + esc(x.note) : ''}</div></div>
+        <div class="right b" style="${plus ? 'color:var(--paid)' : ''}">${plus ? '+' : '−'}${peso(x.amount)}</div></div>`; }).join('') || `<div class="empty">Nothing yet. Start with ＋ Put money in, to record what's in the box now.</div>`}</div>`;
+}
+function openVaultMove(kind, id) {
+  const x = id ? S.vault_moves.find(m => m.id === id) : null, k = x ? x.kind : kind;
+  const d = x ? { amount: String(x.amount), move_date: x.move_date, note: x.note || '' } : { amount: '', move_date: todayISO(), note: '' };
+  openSheet({ title: k === 'deposit' ? (x ? 'Edit deposit' : 'Put money in the safety box') : (x ? 'Edit withdrawal' : 'Take money out of the safety box'), draft: d, mount: o => bindDraft(o, d),
+    body: () => `<div class="grid2"><label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
+      <label class="f"><span>Date</span><input class="in" type="date" data-k="move_date" value="${esc(d.move_date)}"></label></div>
+      <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}" placeholder="${k === 'deposit' ? 'e.g. Starting balance' : 'e.g. For tuition'}"></label>`,
+    foot: () => `${x ? `<button class="btn danger" data-action="delVaultMove" data-id="${x.id}">Delete</button>` : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveVaultMove" data-kind="${k}" ${x ? `data-id="${x.id}"` : ''}>Save</button></div>` });
+}
+function openLoan(id, chargeId) {
+  const L = id ? S.vault_loans.find(l => l.id === id) : null, ch = chargeId ? IX.charge.get(chargeId) : null, t = ch ? IX.tx.get(ch.transaction_id) : null, today = todayISO();
+  const lendMove = L ? ((IX.movesByLoan.get(L.id) || []).find(m => m.kind === 'lend')) : null;
+  const billDue = t ? dueDate(t.card_id, t.month) : null, lendDef = billDue && billDue > today ? billDue : today;
+  const d = L ? { person_id: L.person_id, item: L.item, principal: String(L.principal), months: String(L.months), interest: String(L.interest_per_month || 0), first_due: L.first_due, lend_date: lendMove?.move_date || today, note: L.note || '', charge_id: L.charge_id }
+    : { person_id: ch ? ch.person_id : (S.people.find(p => p.active && p.kind !== 'me') || {}).id, item: t ? t.description : '', principal: ch ? String(balance(ch)) : '', months: '6', interest: '0', first_due: addMonthsDay(lendDef, 1), lend_date: lendDef, note: '', charge_id: ch ? ch.id : null };
+  if (L) { const v = loanInfo(L); d.pay = v.next ? String(r2(v.next.amt - v.next.paid)) : ''; d.pay_on = today; }
+  openSheet({ title: L ? 'Safety box loan' : 'Lend from the safety box', draft: d,
+    mount: o => { bindDraft(o, d); const up = () => { const el = o.querySelector('#loanCalc'); if (el) el.innerHTML = loanCalcText(d); };
+      ['principal', 'months', 'interest'].forEach(k => o.querySelector(`[data-k=${k}]`)?.addEventListener('input', up)); },
+    body: () => { const c = d.charge_id ? IX.charge.get(d.charge_id) : null, tt = c ? IX.tx.get(c.transaction_id) : null, LL = L && S.vault_loans.find(l => l.id === L.id), v = LL ? loanInfo(LL) : null;
+      const repays = LL ? (IX.movesByLoan.get(LL.id) || []).filter(m => m.kind === 'repay').sort((a, b) => b.move_date.localeCompare(a.move_date) || b.id - a.id) : [];
+      return `${tt ? `<div class="card small" style="margin-top:12px">Card ride: <b>${esc(tt.description)}</b> · ${esc(cardCode(tt.card_id))} · ${monthLabel(tt.month)} statement. It stays on that statement, marked <b>Safety box</b>, and the box pays that part of the bill.</div>` : ''}
+      <label class="f"><span>Who borrowed</span><select class="in" data-k="person_id" data-num ${tt ? 'disabled' : ''}>${S.people.filter(p => (p.active && p.kind !== 'me') || p.id === d.person_id).map(p => `<option value="${p.id}" ${p.id === d.person_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="__new">＋ New person…</option></select></label>
+      <label class="f"><span>What for</span><input class="in" data-k="item" value="${esc(d.item)}" placeholder="e.g. Ref, phone, cash loan"></label>
+      <div class="grid2">
+        <label class="f"><span>Amount lent (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="principal" value="${esc(d.principal)}"></label>
+        <label class="f"><span>Months to pay</span><input class="in" type="number" inputmode="numeric" min="1" step="1" data-k="months" value="${esc(d.months)}"></label>
+        <label class="f"><span>Interest per month (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="interest" value="${esc(d.interest)}"></label>
+        <label class="f"><span>First payment</span><input class="in" type="date" data-k="first_due" value="${esc(d.first_due)}"></label>
+        <label class="f"><span>Taken from the box on</span><input class="in" type="date" data-k="lend_date" value="${esc(d.lend_date)}"></label>
+      </div>
+      <div class="small muted" id="loanCalc" style="margin:4px 2px">${loanCalcText(d)}</div>
+      <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
+      ${v ? `<div class="card" style="margin-top:10px"><div class="b">Record a payment back into the box</div>
+        <div class="grid2"><label class="f"><span>Amount (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="pay" value="${esc(d.pay)}"></label>
+        <label class="f"><span>Date</span><input class="in" type="date" data-k="pay_on" value="${esc(d.pay_on)}"></label></div>
+        <button class="btn pri block" style="margin-top:10px" data-action="loanPay" data-id="${LL.id}">Save payment</button></div>
+      <div class="sec">Monthly schedule · ${peso(v.back)} of ${peso(v.total)} back</div>
+      <div class="card list">${v.rows.map(r => `<div class="item"><div class="grow"><div>Month ${r.k} of ${LL.months}</div><div class="small muted">${dateLabelY(r.date)}</div></div>
+        <div class="right"><div class="b">${peso(r.amt)}</div><span class="chip ${r.st}">${r.st === 'paid' ? 'Paid' : r.st === 'partial' ? `Paid ${peso(r.paid)}` : r.date < today ? 'Late' : 'Unpaid'}</span></div></div>`).join('')}</div>
+      <div class="sec">Payments (${repays.length})</div>
+      <div class="card list">${repays.map(m => `<div class="item"><div class="grow"><div>${dateLabelY(m.move_date)}</div>${m.note ? `<div class="small muted">${esc(m.note)}</div>` : ''}</div>
+        <div class="right"><div class="b" style="color:var(--paid)">+${peso(m.amount)}</div><button class="linkish" data-action="rmVaultMove" data-id="${m.id}">remove</button></div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>` : ''}`; },
+    foot: () => `${L ? `<button class="btn danger" data-action="delLoan" data-id="${L.id}">Delete</button>` : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveLoan" ${L ? `data-id="${L.id}"` : ''}>${L ? 'Save changes' : 'Save loan'}</button></div>` });
+}
+async function saveLoan(id) {
+  const d = SHEETS[SHEETS.length - 1].draft, P = r2(num(d.principal)), n = Math.round(num(d.months) || 0), I = r2(num(d.interest) || 0);
+  if (!d.person_id) return toast('Pick who borrowed'); if (!(d.item || '').trim()) return toast("Add what it's for");
+  if (!(P > 0)) return toast('Add the amount lent'); if (!(n >= 1)) return toast('Add the number of months'); if (I < 0) return toast("Interest can't be negative"); if (!d.first_due) return toast('Add the first payment date');
+  const row = { person_id: d.person_id, item: d.item.trim(), principal: P, months: n, interest_per_month: I, first_due: d.first_due, note: (d.note || '').trim() || null };
+  const old = id ? Number(((IX.movesByLoan.get(id) || []).find(m => m.kind === 'lend') || {}).amount || 0) : 0, bal = r2(vaultBalance() + old);
+  if (P > bal + 0.004 && !(await ask(`The safety box shows ${peso(bal)}, less than ${peso(P)}. Save anyway? (Tip: record what's in the box with "Put money in".)`, 'Save'))) return;
+  try {
+    if (id) {
+      await upd('vault_loans', id, row); const lm = (IX.movesByLoan.get(id) || []).find(m => m.kind === 'lend');
+      if (!lm) await ins('vault_moves', [{ kind: 'lend', amount: P, move_date: d.lend_date || todayISO(), loan_id: id }]);
+      else if (Number(lm.amount) !== P || lm.move_date !== d.lend_date) await upd('vault_moves', lm.id, { amount: P, move_date: d.lend_date || todayISO() });
+      const L = S.vault_loans.find(l => l.id === id), st = loanInfo(L).left <= 0.004 ? 'closed' : 'active'; if (L.status !== st) await upd('vault_loans', id, { status: st });
+    } else {
+      const [L] = await ins('vault_loans', [{ ...row, charge_id: d.charge_id || null }]);
+      await ins('vault_moves', [{ kind: 'lend', amount: P, move_date: d.lend_date || todayISO(), loan_id: L.id }]);
+    }
+    closeSheet(); redrawTop(); render(); toast(id ? 'Saved' : `Saved · ${peso(P)} lent from the safety box`);
+  } catch (e) { toast('Could not save: ' + (e.message || e)); }
+}
+async function loanStatus(id) { const L = S.vault_loans.find(l => l.id === id); if (!L) return; const st = loanInfo(L).left <= 0.004 ? 'closed' : 'active'; if (L.status !== st) await upd('vault_loans', id, { status: st }); }
 function entryItem(e) {
   const who = e.person_id ? personName(e.person_id) : '';
   return `<div class="item" data-action="openEntry" data-id="${e.id}"><div class="grow"><div class="b ell">${esc(e.description || catName(e.category_id))}</div>
@@ -1406,7 +1536,7 @@ async function saveMulti() {
 }
 function openRecurringList() {
   openSheet({ title: 'Recurring income & bills', body: () => `
-    <p class="small muted">These are added automatically on their days (e.g. salary on the 3rd and 18th). You can still edit or delete each one after it's added.</p>
+    <p class="small muted">These are added automatically on their days (e.g. salary on the 3rd and 18th). Income is added as <b>expected</b>: tap <b>Got it</b> in Money → Cash outlook when it arrives. You can still edit or delete each one after it's added.</p>
     <div class="card list">${S.recurring.map(r => `<div class="item" data-action="openRec" data-id="${r.id}"><div class="grow"><div class="b">${esc(r.description)} ${r.active ? '' : '<span class="pill">paused</span>'}</div>
       <div class="small muted">${r.kind === 'income' ? 'Income' : 'Expense'} · ${esc(catName(r.category_id))} · every ${r.days.map(x => ordinal(x)).join(' & ')}</div></div><div class="right b">${peso(r.amount)}</div></div>`).join('') || '<div class="empty">Nothing yet</div>'}</div>
     <button class="btn pri block" data-action="openRec">＋ Add recurring</button>` });
@@ -1456,7 +1586,8 @@ async function ensureRecurring() {
       for (const day of [...new Set(r.days.map(x => Math.min(x, dim)))]) {
         const iso = `${y}-${pad(mo)}-${pad(day)}`;
         if (iso >= from && iso <= today && !S.entries.some(e => e.recurring_id === r.id && e.entry_date === iso))
-          rows.push({ kind: r.kind, entry_date: iso, amount: r.amount, category_id: r.category_id, person_id: r.person_id, method: r.method, planned: true, description: r.description, recurring_id: r.id });
+          rows.push({ kind: r.kind, entry_date: iso, amount: r.amount, category_id: r.category_id, person_id: r.person_id, method: r.method, planned: true, description: r.description, recurring_id: r.id,
+                      ...(S._exp && r.kind === 'income' ? { expected: !!r.generated_until || iso >= today } : {}) });
       }
     }
     if (r.generated_until !== today) touched.push(r.id);
@@ -1795,6 +1926,26 @@ const A = {
   moneyPick: el => { UI.mSel = el.dataset.m; render(); },
   mHalf: el => { UI.mHalf = +el.dataset.v; render(); },
   mTab: el => { UI.mTab = el.dataset.v; render(); scrollTo(0, 0); },
+  goVault: () => { SHEETS.length = 0; drawSheets(); UI.view = 'money'; UI.mTab = 'vault'; render(); scrollTo(0, 0); },
+  newLoan: el => openLoan(null, el.dataset.charge ? +el.dataset.charge : null),
+  openLoan: el => openLoan(+el.dataset.id),
+  saveLoan: el => saveLoan(el.dataset.id ? +el.dataset.id : null),
+  loanPay: async el => { const id = +el.dataset.id, L = S.vault_loans.find(l => l.id === id), d = SHEETS[SHEETS.length - 1].draft, amt = r2(num(d.pay)); if (!(amt > 0)) return toast('Add the amount');
+    const v = loanInfo(L); if (amt > v.left + 0.004 && !(await ask(`That's ${peso(r2(amt - v.left))} more than what's left (${peso(v.left)}). Save anyway?`, 'Save'))) return;
+    try { await ins('vault_moves', [{ kind: 'repay', amount: amt, move_date: d.pay_on || todayISO(), loan_id: id }]); await loanStatus(id);
+      const nv = loanInfo(S.vault_loans.find(l => l.id === id)); d.pay = nv.next ? String(r2(nv.next.amt - nv.next.paid)) : ''; redrawTop(); render(); toast(nv.left > 0.004 ? `Saved · ${peso(nv.left)} left` : 'Saved · fully paid back ✓'); }
+    catch (e) { toast('Could not save: ' + (e.message || e)); } },
+  delLoan: async el => { if (!(await ask('Delete this loan and all its payments? If it was a card ride, the ride goes back to unpaid on its statement.', 'Delete', true))) return;
+    try { await del('vault_loans', +el.dataset.id); closeSheet(); redrawTop(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + (e.message || e)); } },
+  vaultMove: el => openVaultMove(el.dataset.kind, el.dataset.id ? +el.dataset.id : null),
+  saveVaultMove: async el => { const d = SHEETS[SHEETS.length - 1].draft, amt = r2(num(d.amount)); if (!(amt > 0)) return toast('Add the amount');
+    const row = { amount: amt, move_date: d.move_date || todayISO(), note: (d.note || '').trim() || null };
+    try { if (el.dataset.id) await upd('vault_moves', +el.dataset.id, row); else await ins('vault_moves', [{ kind: el.dataset.kind, ...row }]); closeSheet(); render(); toast('Saved'); }
+    catch (e) { toast('Could not save: ' + (e.message || e)); } },
+  delVaultMove: async el => { if (!(await ask('Delete this entry?', 'Delete', true))) return;
+    try { await del('vault_moves', +el.dataset.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + (e.message || e)); } },
+  rmVaultMove: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; const m = S.vault_moves.find(x => x.id === +el.dataset.id);
+    try { await del('vault_moves', m.id); if (m.loan_id) await loanStatus(m.loan_id); redrawTop(); render(); } catch (e) { toast('Could not remove: ' + (e.message || e)); } },
   oCycle: el => { UI.oCycle = +el.dataset.v; render(); },
   oProm: () => { UI.oPromises = !UI.oPromises; render(); },
   newExpected: el => openEntry(null, el.dataset.kind, { expected: true }),
@@ -1908,10 +2059,10 @@ const A = {
   menu: () => {
     const el = document.createElement('div'); el.className = 'drawer';
     el.innerHTML = `<div class="pane"><div class="b row" style="padding:6px 10px 12px;gap:8px">${LOGO}CardSplit <span class="small muted">v${VERSION}</span></div>
-      <button data-m="upload">${icon('doc')}Upload statement PDF</button><button data-m="cards">${icon('card')}Cards &amp; due days</button>${S._money ? `<button data-m="cats">${icon('tag')}Categories</button>` : ''}<button data-m="export">${icon('download')}Export backup (Excel)</button>
+      <button data-m="upload">${icon('doc')}Upload statement PDF</button><button data-m="cards">${icon('card')}Cards &amp; due days</button>${S._money ? `<button data-m="cats">${icon('tag')}Categories</button><button data-m="vault">${icon('wallet')}Safety box</button>` : ''}<button data-m="export">${icon('download')}Export backup (Excel)</button>
       <button data-m="reload">${icon('refresh')}Refresh data</button>${DEMO ? '' : `<button data-m="logout">${icon('logout')}Log out</button>`}</div>`;
     el.addEventListener('click', async e => { const m = e.target.closest('[data-m]')?.dataset.m; el.remove();
-      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'cats') openCategories(); if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
+      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'cats') openCategories(); if (m === 'vault') { UI.view = 'money'; UI.mTab = 'vault'; render(); scrollTo(0, 0); } if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
     document.body.appendChild(el);
   },
 };
@@ -1985,6 +2136,7 @@ async function loadData() {
   try {
     S = await db.loadAll();
     S._money = OPT_TABLES.every(t => Array.isArray(S[t])); for (const t of OPT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
+    S._vault = VAULT_TABLES.every(t => Array.isArray(S[t])); for (const t of VAULT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
     S._exp = S._money && await db.hasExpected().catch(() => false);
     reindex();
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
