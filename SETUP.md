@@ -13,6 +13,7 @@ You will make 2 free accounts:
 | `database/3-money.sql` | Money tab tables (income, expenses, recurring) | Supabase SQL Editor (run once, Part F) |
 | `database/4-expected.sql` | Lets you add expected money (not received yet) | Supabase SQL Editor (run once, Part G) |
 | `database/5-safety-box.sql` | Safety box: your savings and loans paid back into it | Supabase SQL Editor (run once, Part H) |
+| `database/6-downpayment.sql` | Downpayment per person on an installment | Supabase SQL Editor (run once, Part I) |
 | `index.html` | The app | GitHub (this repo) |
 | `.github/workflows/keep-alive.yml` | Daily ping so Supabase never pauses | GitHub (this repo) |
 
@@ -155,6 +156,14 @@ Expected money doesn't count in the Money **Summary** until you tap **Got it**. 
 5. **Cash you lend** from the box: **Safety box** → **＋ Lend money**.
 6. When they pay you back, open the loan → **Record a payment back into the box**. Paybacks go into the box only. They don't count in the Money summary or the Cash outlook.
 7. "Money you have now" in the Cash outlook should **not** include the safety box.
+
+## Part I — Installments: downpayment and early months (v2.6)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/6-downpayment.sql` and click **Run**. It only adds two columns. It's safe to run twice.
+2. **Downpayment:** Cards → Installments → open the plan → **Edit** → under the person, type the **Downpayment ₱** and the date you got it → **Save**.
+   - It pays **their last months first** (e.g. ₱5,000 at ₱1,723.74/month = months 17–18 + ₱1,552.52 of month 16). Their monthly payments are unchanged until then.
+   - Until those months come, it shows on People under **Advances you're holding** (keep it in your wallet). It's applied by itself when each of those months is added.
+3. **Early months:** Cards → Installments shows "N installments start after month 1" when a plan began before your records. Tap **Add the early months** → **Add as paid** (if everyone already paid you) or **Add as unpaid**.
 
 ---
 

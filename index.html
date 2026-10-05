@@ -68,6 +68,7 @@ nav.bottom button.add .ic{width:48px;height:48px;border-radius:50%;background:va
 .chip.partial{background:var(--part-bg);color:var(--part)}
 .chip.unpaid{background:var(--unpaid-bg);color:var(--unpaid)}
 .chip.vault{background:var(--t-sky);color:var(--brand)}
+.chip.later{background:var(--mine-bg);color:var(--muted)}
 .chip.brand{background:var(--brand-soft);color:var(--brand)}
 .pill{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--mine-bg);color:var(--mine)}
 .pill.red{background:var(--unpaid-bg);color:var(--unpaid)}
@@ -195,7 +196,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.4';
+const VERSION = '2.6';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
@@ -249,6 +250,7 @@ function makeDemoDB(seed) {
     async update(t, id, patch) { const r = data[t].find(x => x.id === id); Object.assign(r, patch); return { ...r }; },
     async remove(t, id) { cascadeLocal(data, t, id); },
     async hasExpected() { return true; },
+    async hasCol() { return true; },
   };
 }
 function makeSupabaseDB(sb) {
@@ -272,6 +274,7 @@ function makeSupabaseDB(sb) {
     async update(t, id, patch) { const { data, error } = await sb.from(t).update(patch).eq('id', id).select().single(); if (error) throw error; return data; },
     async remove(t, id) { const { error } = await sb.from(t).delete().eq('id', id); if (error) throw error; },
     async hasExpected() { const { error } = await sb.from('entries').select('expected').limit(1); return !error; },   // 4-expected.sql run?
+    async hasCol(t, c) { const { error } = await sb.from(t).select(c).limit(1); return !error; },
   };
 }
 
@@ -328,7 +331,7 @@ async function applyAdvances(charges) {
   const list = [...charges].sort((a, b) => (IX.tx.get(a.transaction_id)?.month || '').localeCompare(IX.tx.get(b.transaction_id)?.month || '') || a.id - b.id);
   for (const c of list) {
     if (isMe(c.person_id) || !(Number(c.amount) > 0)) continue;
-    let need = r2(Number(c.amount)); const start = need;
+    let need = Math.max(0, balance(c)); const start = need; if (need <= 0.004) continue;
     for (const s of advanceCharges(c.person_id)) {
       const avail = left.has(s.id) ? left.get(s.id) : advanceOf(s); if (avail <= 0.004) continue;
       const take = r2(Math.min(avail, need)); left.set(s.id, r2(avail - take)); need = r2(need - take); total = r2(total + take);
@@ -344,11 +347,12 @@ function chargeStatus(ch) {
   if (!live(ch)) return 'converted';
   if (isMe(ch.person_id)) return 'mine';
   if (inVault(ch)) return 'vault';
+  if (notDueYet(ch)) return 'later';
   const b = balance(ch);
   if (b <= 0.004) return 'paid';
   return received(ch) > 0.004 ? 'partial' : 'unpaid';
 }
-const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine', converted: 'Converted', vault: 'Safety box' };
+const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine', converted: 'Converted', vault: 'Safety box', later: 'Not due yet' };
 const cardLabel = id => { const c = IX.card.get(id); return c ? (c.bank || c.code) + (c.last4 ? ' ••' + c.last4 : '') : '?'; };
 const cardCode = id => IX.card.get(id)?.code ?? '?';
 function dueDate(cardId, month) {
@@ -367,7 +371,7 @@ function planInfo(p, asOf) {
   const billed = Math.max(0, Math.min(p.months, monthDiff(asOf, p.first_month) + 1));
   const left = ended ? 0 : p.months - billed;
   const status = ended ? 'ended' : billed >= p.months ? 'done' : billed === 0 ? 'notyet' : 'active';
-  const charges = (IX.txByInst.get(p.id) || []).flatMap(t => IX.chargesByTx.get(t.id) || []).filter(c => !isMe(c.person_id));
+  const charges = (IX.txByInst.get(p.id) || []).filter(t => t.month <= asOf).flatMap(t => IX.chargesByTx.get(t.id) || []).filter(c => !isMe(c.person_id));
   return { monthly, total, orig, interest, perMonth: interest == null ? null : r2(interest / p.months),
            pct: orig ? interest / orig : null, billed, left, remaining: r2(left * monthly), status,
            last: addMonths(p.first_month, p.months - 1), owed: sum(charges, balance), collected: sum(charges, received) };
@@ -387,6 +391,42 @@ function splitFromShares(p) {
   }
   return shares;
 }
+// Downpayment: paid up front by a rider. It covers THEIR LAST months first (month n, then n-1, ...).
+const DP_NOTE = 'Downpayment';
+function dpCover(p, sh) {   // { monthNo: amount covered }
+  let left = r2(Number(sh?.downpayment || 0)); const out = {};
+  for (let k = p.months; k >= 1 && left > 0.004; k--) {
+    const t = (IX.txByInst.get(p.id) || []).find(x => x.installment_no === k), ch = t && (IX.chargesByTx.get(t.id) || []).find(c => c.person_id === sh.person_id);
+    const need = ch ? Number(ch.amount) : Number(sh.monthly_share); if (!(need > 0)) continue;
+    const take = r2(Math.min(left, need)); out[k] = take; left = r2(left - take);
+  }
+  return out;
+}
+const dpApplied = (p, sh) => sum((IX.txByInst.get(p.id) || []).flatMap(t => (IX.chargesByTx.get(t.id) || []).filter(c => c.person_id === sh.person_id))
+  .flatMap(c => (IX.collByCharge.get(c.id) || []).filter(x => x.note === DP_NOTE)), x => x.amount);
+const dpHeld = sh => { const p = IX.inst.get(sh.installment_id); return p ? Math.max(0, r2(Number(sh.downpayment || 0) - dpApplied(p, sh))) : 0; };
+const personDpHeld = pid => sum((S.installment_shares || []).filter(s => s.person_id === pid), dpHeld);
+const dpText = (d, s) => { const m = num(s.amount) || 0, D = num(s.dp) || 0, n = parseInt(d.months, 10) || 0;
+  if (!(D > 0)) return 'Downpayment (optional): it pays their last months first.'; if (!(m > 0) || !n) return '';
+  const full = Math.min(n, Math.floor(D / m + 1e-9)), rest = r2(D - full * m), parts = [];
+  if (full) parts.push(full === 1 ? `month ${n}` : `months ${n - full + 1}–${n}`); if (rest > 0.004 && full < n) parts.push(`${peso(rest)} of month ${n - full}`);
+  return `Downpayment covers ${parts.join(' + ')} (their last months first).`; };
+async function syncDownpayments() {   // put each downpayment on the months it covers that exist now
+  if (!S._dp) return 0; let n = 0;
+  for (const sh of [...S.installment_shares]) {
+    const p = IX.inst.get(sh.installment_id); if (!p || isMe(sh.person_id)) continue;
+    const cover = dpCover(p, sh);
+    for (const t of [...(IX.txByInst.get(p.id) || [])]) {
+      const ch = (IX.chargesByTx.get(t.id) || []).find(c => c.person_id === sh.person_id); if (!ch) continue;
+      const want = r2(cover[t.installment_no] || 0), have = (IX.collByCharge.get(ch.id) || []).filter(x => x.note === DP_NOTE);
+      if (Math.abs(sum(have, x => x.amount) - want) < 0.005) continue;
+      for (const x of have) await del('collections', x.id);
+      if (want > 0.004) await ins('collections', [{ charge_id: ch.id, amount: want, received_on: sh.downpayment_on || todayISO(), note: DP_NOTE }]);
+      n++;
+    }
+  }
+  return n;
+}
 async function ensureInstallmentMonths() {
   const cur = monthOf(todayISO());
   const todo = [];
@@ -404,6 +444,7 @@ async function ensureInstallmentMonths() {
   const rows = [];
   for (const t of txs) for (const c of splitFromShares(IX.inst.get(t.installment_id))) rows.push({ ...c, transaction_id: t.id });
   const made = await ins('charges', rows);
+  await syncDownpayments();   // last months: paid by the downpayment
   try { const a = await applyAdvances(made); if (a.total > 0.004) UI._advMsg = ` · ${peso(a.total)} paid from advances`; } catch (e) { console.error(e); }
   return txs.length;
 }
@@ -562,7 +603,7 @@ function txItem(t) {
   const inst = t.installment_id ? IX.inst.get(t.installment_id) : null;
   return `<div class="item" data-action="openTx" data-id="${t.id}">
     <div class="grow"><div class="b ell">${esc(t.description)}</div>
-      <div class="small muted">${t.txn_date ? dateLabel(t.txn_date) : monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
+      <div class="small muted">${monthLabel(t.month)} statement${t.txn_date ? ' · bought ' + dateLabel(t.txn_date) : ''} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
       <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' || st === 'converted' ? '' : st === 'vault' ? ' ' + peso(c.amount) + ' · safety box' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
     <div class="right b">${peso(t.amount)}</div></div>`;
 }
@@ -578,10 +619,10 @@ function viewTx() {
     <div class="filters">
       <select class="in" data-filter="card">${opt('', 'All cards', f.card)}${S.cards.map(c => opt(c.id, c.code, f.card)).join('')}</select>
       <button class="in" data-action="pickPeople" style="text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span class="ell">${peopleLabel(f.people)}</span><span class="muted">▾</span></button>
-      <select class="in" data-filter="status" style="grid-column:1/-1">${opt('', 'Any status', f.status)}${['unpaid', 'partial', 'paid', 'mine'].map(s => opt(s, STATUS_LABEL[s], f.status)).join('')}</select>
+      <select class="in" data-filter="status" style="grid-column:1/-1">${opt('', 'Any status', f.status)}${['unpaid', 'partial', 'later', 'paid', 'mine'].map(s => opt(s, STATUS_LABEL[s], f.status)).join('')}</select>
     </div>
     <div class="sumline muted">${list.length} transaction${list.length === 1 ? '' : 's'} · ${peso(sum(list, t => t.amount))}${(f.people || []).length ? (() => { const cs = list.flatMap(t => IX.chargesByTx.get(t.id) || []).filter(c => f.people.includes(c.person_id));
-      return ` · <b>their share ${peso(sum(cs, c => c.amount))}</b> · still owed <b class="${sum(cs.filter(c => !isMe(c.person_id)), balance) > 0.004 ? 'over' : ''}">${peso(sum(cs.filter(c => !isMe(c.person_id)), balance))}</b>`; })() : ''}</div>
+      return ` · <b>their share ${peso(sum(cs, c => c.amount))}</b> · still owed <b class="${sum(cs.filter(c => !isMe(c.person_id) && !notDueYet(c)), balance) > 0.004 ? 'over' : ''}">${peso(sum(cs.filter(c => !isMe(c.person_id) && !notDueYet(c)), balance))}</b>${(l => l > 0.004 ? ` · ${peso(l)} not due yet` : '')(sum(cs.filter(c => !isMe(c.person_id) && notDueYet(c)), balance))}`; })() : ''}</div>
     <div class="card list">${list.slice(0, 300).map(txItem).join('') || '<div class="empty">Nothing here. Tap + to add a transaction.</div>'}
     ${list.length > 300 ? `<div class="empty small">Showing first 300. Use the filters to narrow down.</div>` : ''}</div>`;
 }
@@ -606,7 +647,7 @@ function viewChart() {
   const rows = cf.scope === 'month' ? all.filter(x => x.t.month === UI.month) : all;
   const per = new Map();
   for (const { c } of rows) { const p = per.get(c.person_id) || { id: c.person_id, amt: 0, n: 0, owed: 0 };
-    p.amt = r2(p.amt + Number(c.amount)); p.n++; if (!isMe(c.person_id)) p.owed = r2(p.owed + balance(c)); per.set(c.person_id, p); }
+    p.amt = r2(p.amt + Number(c.amount)); p.n++; if (!isMe(c.person_id) && !notDueYet(c)) p.owed = r2(p.owed + balance(c)); per.set(c.person_id, p); }
   const ranked = [...per.values()].filter(p => p.amt > 0.004).sort((a, b) => b.amt - a.amt);
   const total = sum(ranked, p => p.amt), top1 = ranked[0]?.amt || 1;
   const opt = (v, l, cur) => `<option value="${v}" ${String(cur) === String(v) ? 'selected' : ''}>${esc(l)}</option>`;
@@ -813,8 +854,37 @@ function viewInst() {
       <div class="tile t-lav"><div class="lbl">Monthly (ongoing)</div><div class="val">${peso(sum(act, x => x.i.monthly))}</div></div>
     </div>
     <div class="small muted" style="margin:8px 2px">Counted as of the ${monthLabel(asOf)} statement. Change the month at the top.</div>
+    ${(() => { const miss = S.installments.map(p => missingEarly(p).length).filter(Boolean); return miss.length ? `<div class="card" style="margin-top:8px"><div class="b">${miss.length} installment${miss.length === 1 ? '' : 's'} start after month 1</div>
+      <div class="small muted">${sum(miss, x => x)} early month${sum(miss, x => x) === 1 ? ' is' : 's are'} from before your records. Add them so you can see every month.</div>
+      <button class="btn sm" style="margin-top:8px" data-action="openFillEarly">Add the early months</button></div>` : ''; })()}
     ${list.map(({ p, i }) => planCard(p, i)).join('') || '<div class="card empty">No installments here.</div>'}
     <button class="btn pri block" style="margin-top:12px" data-action="newPlan">+ New installment</button>`;
+}
+function missingEarly(p) {   // months 1..(first month in the app - 1)
+  const nos = (IX.txByInst.get(p.id) || []).map(t => t.installment_no); if (!nos.length) return [];
+  return Array.from({ length: Math.min(...nos) - 1 }, (_, i) => i + 1);
+}
+function openFillEarly() {
+  const miss = S.installments.map(p => ({ p, ks: missingEarly(p) })).filter(x => x.ks.length);
+  openSheet({ title: 'Add the early months', body: () => `
+    <p class="small">These installments start after month 1 in the app, because the earlier months are from before your records. Adding them lets you see every month of each plan.</p>
+    <div class="card list">${miss.map(({ p, ks }) => `<div class="item"><div class="grow"><div class="b ell">${esc(p.item)}</div>
+      <div class="small muted">${esc(cardCode(p.card_id))} · month${ks.length === 1 ? '' : 's'} 1${ks.length > 1 ? '–' + ks.length : ''} of ${p.months} · ${monthLabel(p.first_month)}${ks.length > 1 ? ' – ' + monthLabel(addMonths(p.first_month, ks.length - 1)) : ''} statements</div></div>
+      <div class="right b">${ks.length}</div></div>`).join('')}</div>
+    <p class="small muted">Choose <b>Add as paid</b> if everyone already paid you for those months (most likely, since they're old). They'll be marked "Before your records". Choose <b>Add as unpaid</b> only if someone still owes you for them.</p>`,
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn" data-action="fillEarly" data-paid="0">Add as unpaid</button><button class="btn pri" data-action="fillEarly" data-paid="1">Add as paid</button></div>` });
+}
+async function fillEarly(paid) {
+  const miss = S.installments.map(p => ({ p, ks: missingEarly(p) })).filter(x => x.ks.length); if (!miss.length) return 0;
+  const txs = await ins('transactions', miss.flatMap(({ p, ks }) => ks.map(k => ({ card_id: p.card_id, month: addMonths(p.first_month, k - 1), txn_date: null, description: p.item,
+    category: 'LOAN', amount: r2(p.monthly_amount), installment_id: p.id, installment_no: k, source: 'auto' }))));
+  const rows = []; for (const t of txs) for (const c of splitFromShares(IX.inst.get(t.installment_id))) rows.push({ ...c, transaction_id: t.id });
+  const chs = await ins('charges', rows);
+  if (paid) { const cols = chs.filter(c => !isMe(c.person_id) && Number(c.amount) > 0).map(c => { const t = IX.tx.get(c.transaction_id);
+    return { charge_id: c.id, amount: Number(c.amount), received_on: dueDate(t.card_id, t.month) || addMonths(t.month, 1), note: 'Before your records' }; });
+    if (cols.length) await ins('collections', cols); }
+  await syncDownpayments();
+  return txs.length;
 }
 function planCard(p, i) {
   const shares = IX.sharesByInst.get(p.id) || [];
@@ -836,6 +906,8 @@ function planCard(p, i) {
         <span class="k">Interest paid so far</span><span>${i.perMonth == null ? '—' : peso(i.perMonth * i.billed)}</span>
         <span class="k">Who pays each month</span><span>${shares.map(s => `${esc(personName(s.person_id))} ${peso(s.monthly_share)}`).join('<br>') || 'Me'}</span>
         <span class="k">Others still owe on this</span><span class="${i.owed > 0.004 ? 'over' : ''}">${peso(i.owed)}</span>
+        ${shares.filter(s => Number(s.downpayment) > 0 && !isMe(s.person_id)).map(s => { const cv = Object.keys(dpCover(p, s)).map(Number).sort((a, b) => a - b), h = dpHeld(s);
+          return `<span class="k">Downpayment · ${esc(personName(s.person_id))}</span><span>${peso(s.downpayment)}${s.downpayment_on ? ` on ${dateLabelY(s.downpayment_on)}` : ''}<br><span class="small muted">covers month${cv.length === 1 ? '' : 's'} ${cv.length > 1 ? cv[0] + '–' + cv[cv.length - 1] : cv[0] || '—'}${h > 0.004 ? ` · ${peso(h)} still held` : ''}</span></span>`; }).join('')}
         ${p.notes ? `<span class="k">Notes</span><span class="small">${esc(p.notes)}</span>` : ''}
       </div>
       <div class="row" style="margin-top:10px;gap:8px"><button class="btn sm" data-action="openPlan" data-id="${p.id}">Edit</button><button class="btn sm" data-action="planTx" data-id="${p.id}">See months</button></div>
@@ -846,9 +918,10 @@ function openPlan(id) {
   const card = S.cards.find(c => c.active) || S.cards[0];
   const d = p ? { ...p, original_amount: p.original_amount ?? '', monthly_amount: String(p.monthly_amount), months: String(p.months), reason: p.reason || '', notes: p.notes || '', ended_month: p.ended_month || '' }
               : { id: null, item: '', reason: '', card_id: card?.id, original_amount: '', monthly_amount: '', months: '12', first_month: UI.month, status: 'active', ended_month: '', notes: '' };
-  d.shares = p ? (IX.sharesByInst.get(p.id) || []).map(s => ({ id: s.id, person_id: s.person_id, amount: String(s.monthly_share) }))
+  d.shares = p ? (IX.sharesByInst.get(p.id) || []).map(s => ({ id: s.id, person_id: s.person_id, amount: String(s.monthly_share), dp: Number(s.downpayment) ? String(s.downpayment) : '', dp_on: s.downpayment_on || '' }))
                : [{ id: null, person_id: IX.me, amount: '' }];
-  const sheet = { title: p ? 'Installment' : 'New installment', draft: d, body: () => planBody(d), mount: o => bindPlan(o, d),
+  const sheet = { title: p ? 'Installment' : 'New installment', draft: d, body: () => planBody(d), mount: o => { bindPlan(o, d);
+      o.addEventListener('input', () => o.querySelectorAll('[data-dptext]').forEach(x => { x.textContent = dpText(d, d.shares[+x.dataset.dptext] || {}); })); },
     foot: () => `${d.id ? `<button class="btn danger" data-action="delPlan">Delete</button>` : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="savePlan">Save</button></div>` };
   openSheet(sheet);
 }
@@ -877,7 +950,10 @@ function planBody(d) {
     ${d.shares.map((s, i) => `<div class="charge"><div class="top">
       <select class="in" data-si="${i}" data-sk="person_id">${people.map(p => `<option value="${p.id}" ${p.id === s.person_id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}<option value="__new">＋ New person…</option></select>
       <input class="in" type="number" step="0.01" data-si="${i}" data-sk="amount" value="${esc(s.amount)}" placeholder="₱ / month">
-      <button class="iconbtn" data-action="rmShare" data-i="${i}" aria-label="Remove">✕</button></div></div>`).join('')}
+      <button class="iconbtn" data-action="rmShare" data-i="${i}" aria-label="Remove">✕</button></div>
+      ${S._dp && !isMe(s.person_id) ? `<div class="extra"><input class="in" type="number" step="0.01" inputmode="decimal" data-si="${i}" data-sk="dp" value="${esc(s.dp || '')}" placeholder="Downpayment ₱">
+        <input class="in" type="date" data-si="${i}" data-sk="dp_on" value="${esc(s.dp_on || '')}" title="Downpayment received on"></div>
+        <div class="small muted" style="margin-top:4px" data-dptext="${i}">${dpText(d, s)}</div>` : ''}</div>`).join('')}
     <label class="f"><span>Notes</span><textarea class="in" data-k="notes" rows="2">${esc(d.notes)}</textarea></label>
     <p class="small muted">New months are added by the app each month until the last month. Changing the split only affects months not created yet.</p>`;
 }
@@ -897,7 +973,8 @@ async function savePlan() {
   if (!row.item) return toast('Add the item name');
   if (!(row.monthly_amount > 0)) return toast('Add the monthly amount');
   if (!(row.months > 0)) return toast('Add the number of months');
-  const shares = d.shares.map(s => ({ ...s, amount: r2(num(s.amount)) })).filter(s => s.person_id);
+  const shares = d.shares.map(s => ({ ...s, amount: r2(num(s.amount)), dp: r2(num(s.dp) || 0), dp_on: s.dp_on || null })).filter(s => s.person_id);
+  if (shares.some(s => s.dp < 0)) return toast("Downpayment can't be negative");
   if (new Set(shares.map(s => s.person_id)).size !== shares.length) return toast('Same person is listed twice');
   try {
     let pid = d.id;
@@ -905,10 +982,13 @@ async function savePlan() {
     const old = IX.sharesByInst.get(pid) || [];
     const keep = new Set(shares.filter(s => s.id).map(s => s.id));
     for (const o of old.filter(o => !keep.has(o.id))) await del('installment_shares', o.id);
-    for (const s of shares.filter(s => s.id)) { const o = old.find(x => x.id === s.id); if (o && (o.person_id !== s.person_id || Number(o.monthly_share) !== s.amount)) await upd('installment_shares', s.id, { person_id: s.person_id, monthly_share: s.amount }); }
-    const fresh = shares.filter(s => !s.id).map(s => ({ installment_id: pid, person_id: s.person_id, monthly_share: s.amount }));
+    const dpOf = s => S._dp ? { downpayment: isMe(s.person_id) ? 0 : s.dp, downpayment_on: isMe(s.person_id) ? null : s.dp_on } : {};
+    for (const s of shares.filter(s => s.id)) { const o = old.find(x => x.id === s.id);
+      if (o && (o.person_id !== s.person_id || Number(o.monthly_share) !== s.amount || (S._dp && (Number(o.downpayment || 0) !== dpOf(s).downpayment || (o.downpayment_on || null) !== dpOf(s).downpayment_on))))
+        await upd('installment_shares', s.id, { person_id: s.person_id, monthly_share: s.amount, ...dpOf(s) }); }
+    const fresh = shares.filter(s => !s.id).map(s => ({ installment_id: pid, person_id: s.person_id, monthly_share: s.amount, ...dpOf(s) }));
     if (fresh.length) await ins('installment_shares', fresh);
-    const made = await ensureInstallmentMonths();
+    const made = await ensureInstallmentMonths(); await syncDownpayments();
     closeSheet(); render(); toast(made ? `Saved · ${made} month${made === 1 ? '' : 's'} added` : 'Saved');
   } catch (e) { console.error(e); toast('Could not save: ' + (e.message || e)); }
 }
@@ -921,7 +1001,7 @@ function personStats(pid) {
   const cs = (IX.chargesByPerson.get(pid) || []).filter(live), later = cs.filter(notDueYet), now = cs.filter(c => !notDueYet(c));
   const open = now.filter(c => balance(c) > 0.004);
   const cred = cs.filter(c => balance(c) < -0.004);
-  return { bal: sum(now, balance), open: open.length, unpaid: sum(open, balance), later: sum(later, balance), laterN: later.length, credit: r2(-sum(cred, balance)), credits: cred.length, adv: personAdvance(pid),
+  return { dp: S._dp ? personDpHeld(pid) : 0, bal: sum(now, balance), open: open.length, unpaid: sum(open, balance), later: sum(later, balance), laterN: later.length, credit: r2(-sum(cred, balance)), credits: cred.length, adv: personAdvance(pid),
            oldest: open.map(c => IX.tx.get(c.transaction_id)?.month).sort()[0] };
 }
 // Charges where the person has a credit: a refund line, or paid more than the item
@@ -937,10 +1017,10 @@ function viewPeople() {
     <div class="small muted">${s.open ? `${s.open} unpaid item${s.open === 1 ? '' : 's'} · since ${monthLabel(s.oldest)}` : 'All paid'}${s.later > 0.004 ? ` · ${peso(s.later)} not due yet` : ''}${s.adv > 0.004 ? ` · <span style="color:var(--paid)">advance ${peso(s.adv)}</span>` : ''}${s.credit - s.adv > 0.004 ? ` · credit ${peso(r2(s.credit - s.adv))}` : ''}${S._vault && vaultLeft(p.id) > 0.004 ? ` · safety box ${peso(vaultLeft(p.id))}` : ''}</div></div><div class="right b ${s.bal > 0.004 ? 'over' : ''}">${peso(s.bal)}</div></div>`;
   return `
     <div class="card row" style="margin-top:6px"><div class="grow"><div class="small muted">Owed to you (due now)</div><div class="big">${peso(sum(owing, x => x.s.bal))}</div>${(l => l > 0.004 ? `<div class="small muted">+ ${peso(l)} on statements not due yet</div>` : '')(sum(ppl, x => x.s.later))}</div><button class="btn sm" data-action="newPerson">+ Person</button></div>
-    ${(() => { const adv = ppl.filter(x => x.s.adv > 0.004).sort((a, b) => b.s.adv - a.s.adv), tot = sum(adv, x => x.s.adv);
+    ${(() => { const adv = ppl.filter(x => x.s.adv + x.s.dp > 0.004).sort((a, b) => (b.s.adv + b.s.dp) - (a.s.adv + a.s.dp)), tot = sum(adv, x => x.s.adv + x.s.dp);
       return `<div class="card t-mint"><div class="small muted">Advances you're holding</div><div class="big">${peso(tot)}</div>
-        <div class="small muted" style="margin-top:2px">Money riders paid ahead. Keep this in your secure wallet. It goes down by itself as their next installment months come in.</div>
-        ${adv.length ? `<div class="list" style="margin-top:6px">${adv.map(({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow">${esc(p.name)}</div><div class="right b">${peso(s.adv)}</div></div>`).join('')}</div>` : ''}</div>`; })()}
+        <div class="small muted" style="margin-top:2px">Money riders paid ahead (advances and downpayments not used yet). Keep this in your secure wallet. It goes down by itself as the months it covers come in.</div>
+        ${adv.length ? `<div class="list" style="margin-top:6px">${adv.map(({ p, s }) => `<div class="item" data-action="openPerson" data-id="${p.id}"><div class="grow">${esc(p.name)}${s.dp > 0.004 ? `<div class="small muted">${s.adv > 0.004 ? `advance ${peso(s.adv)} · ` : ''}downpayment ${peso(s.dp)}</div>` : ''}</div><div class="right b">${peso(s.adv + s.dp)}</div></div>`).join('')}</div>` : ''}</div>`; })()}
     <div class="sec">Still owe you</div><div class="card list">${owing.map(item).join('') || '<div class="empty">Nobody owes you 🎉</div>'}</div>
     <div class="sec">All paid</div><div class="card list">${clear.map(item).join('') || '<div class="empty">—</div>'}</div>`;
 }
@@ -1251,8 +1331,10 @@ function outlookEvents(today, rounds) {
     ev.push({ r: i, date, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
     if (UI.oPromises) for (const p of bill.proj) for (const s of splitFromShares(p)) {   // riders' share of installment months not created yet (after any advance)
       if (isHousehold(s.person_id) || !(s.amount > 0)) continue;
-      const adv = advLeft.has(s.person_id) ? advLeft.get(s.person_id) : personAdvance(s.person_id), use = Math.min(adv, s.amount); advLeft.set(s.person_id, r2(adv - use));
-      const amt = r2(s.amount - use); if (amt <= 0.004) continue;
+      const shr = (IX.sharesByInst.get(p.id) || []).find(x => x.person_id === s.person_id), dc = S._dp && shr ? (dpCover(p, shr)[monthDiff(m, p.first_month) + 1] || 0) : 0;
+      const need = r2(s.amount - dc); if (need <= 0.004) continue;
+      const adv = advLeft.has(s.person_id) ? advLeft.get(s.person_id) : personAdvance(s.person_id), use = Math.min(adv, need); advLeft.set(s.person_id, r2(adv - use));
+      const amt = r2(need - use); if (amt <= 0.004) continue;
       const k = `${s.person_id}|${i}|${date}|to collect`, o = owe.get(k) || { amt: 0, n: 0, since: m }; o.amt = r2(o.amt + amt); o.n++; owe.set(k, o);
     }
   } });
@@ -2003,6 +2085,9 @@ const A = {
   splitEq: () => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); const n = d.charges.length; if (!amt || !n) return toast('Add the amount and people first');
     const each = Math.floor(amt / n * 100) / 100; d.charges.forEach((c, i) => c.amount = String(i === 0 ? r2(amt - each * (n - 1)) : each)); redrawTop(); },
   saveTx: () => saveTx(),
+  openFillEarly: () => openFillEarly(),
+  fillEarly: async el => { const paid = el.dataset.paid === '1';
+    try { const n = await fillEarly(paid); closeSheet(); render(); toast(`Added ${n} early month${n === 1 ? '' : 's'}${paid ? ', marked paid' : ''}`); } catch (e) { toast('Could not add: ' + (e.message || e)); } },
   delTx: async () => { const d = SHEETS[SHEETS.length - 1].draft; if (!(await ask('Delete this transaction and its payments?', 'Delete', true))) return;
     try { await del('transactions', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
   addPay: el => openPay(+el.dataset.charge),
@@ -2148,9 +2233,11 @@ async function loadData() {
     S._money = OPT_TABLES.every(t => Array.isArray(S[t])); for (const t of OPT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
     S._vault = VAULT_TABLES.every(t => Array.isArray(S[t])); for (const t of VAULT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
     S._exp = S._money && await db.hasExpected().catch(() => false);
+    S._dp = await db.hasCol('installment_shares', 'downpayment').catch(() => false);
     reindex();
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
     const made = await ensureInstallmentMonths();
+    await syncDownpayments();
     await ensureMoneyDefaults(); await ensureRecurring();
     render(); if (made) toast(`${made} installment month${made === 1 ? '' : 's'} added${UI._advMsg || ''}`); UI._advMsg = '';
   } catch (e) {
