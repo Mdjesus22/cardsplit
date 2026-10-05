@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.0';
+const VERSION = '2.1';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -620,15 +620,24 @@ function viewChart() {
 document.addEventListener('change', e => { const k = e.target.dataset?.cf; if (!k) return; UI.cf[k] = e.target.value; render(); });
 
 /* ---------------- transaction sheet ---------------- */
+// Statement a purchase lands on: the month it was bought (or the next one if bought after the card's cut-off day)
+function stmtMonthFor(cardId, iso) {
+  const c = IX.card.get(cardId), m = monthOf(iso);
+  return c?.cutoff_day && +iso.slice(8, 10) > c.cutoff_day ? addMonths(m, 1) : m;
+}
 function openTx(id) {
   const t = id ? IX.tx.get(id) : null;
   const cs = t ? (IX.chargesByTx.get(t.id) || []) : [];
   const card = S.cards.find(c => c.active) || S.cards[0];
   const d = t ? { ...t, amount: String(t.amount) } :
-    { id: null, description: '', amount: '', card_id: card?.id, month: UI.month, txn_date: todayISO(), category: '', installment_id: null };
+    { id: null, description: '', amount: '', card_id: card?.id, month: stmtMonthFor(card?.id, todayISO()), txn_date: todayISO(), category: '', installment_id: null };
   d.charges = t ? cs.map(c => ({ id: c.id, person_id: c.person_id, amount: String(c.amount), promise_date: c.promise_date || '', note: c.note || '' }))
                 : [{ id: null, person_id: IX.me, amount: '', promise_date: '', note: '' }];
-  const sheet = { title: t ? 'Transaction' : 'New transaction', draft: d, body: () => txBody(d), foot: () => txFoot(d), mount: o => bindDraft(o, d, sheet) };
+  const sheet = { title: t ? 'Transaction' : 'New transaction', draft: d, body: () => txBody(d), foot: () => txFoot(d), mount: o => { bindDraft(o, d, sheet);
+    if (d.id) return;   // new purchase: keep Statement month in step with Date bought / Card until you change it yourself
+    const mi = o.querySelector('[data-k=month]'), follow = () => { if (d._monthSet) return; d.month = stmtMonthFor(d.card_id, d.txn_date || todayISO()); if (mi) mi.value = d.month.slice(0, 7); };
+    mi?.addEventListener('input', () => { d._monthSet = true; });
+    o.querySelector('[data-k=txn_date]')?.addEventListener('input', follow); o.querySelector('[data-k=card_id]')?.addEventListener('input', follow); } };
   openSheet(sheet);
 }
 function txSumLine(d) {
@@ -732,9 +741,11 @@ async function saveTx() {
       const patch = { person_id: c.person_id, amount: c.amount, promise_date: c.promise_date || null, note: (c.note || '').trim() || null };
       if (o.person_id !== patch.person_id || Number(o.amount) !== patch.amount || (o.promise_date || null) !== patch.promise_date || (o.note || null) !== patch.note) await upd('charges', c.id, patch);
     }
+    const isNew = !d.id;
     const fresh = charges.filter(c => !c.id).map(c => ({ transaction_id: txId, person_id: c.person_id, amount: c.amount, promise_date: c.promise_date || null, note: (c.note || '').trim() || null }));
     if (fresh.length) await ins('charges', fresh);
-    closeSheet(); render(); toast('Saved');
+    if (isNew && row.month !== UI.month && UI.view !== 'money') UI.month = row.month;   // show the statement it went to
+    closeSheet(); render(); toast(isNew ? `Saved to the ${monthLabel(row.month)} statement` : 'Saved');
   } catch (e) { console.error(e); toast('Could not save: ' + (e.message || e)); }
 }
 
@@ -1188,67 +1199,74 @@ function recurDates(r, from, to) {   // days a recurring item falls on, within [
   }
   return out;
 }
-function outlookEvents(today, end) {
-  const ev = [], owe = new Map(), advLeft = new Map();
+function outlookEvents(today, rounds) {
+  const ev = [], owe = new Map(), advLeft = new Map(), last = rounds.length - 1, end = rounds[last].end;
+  const byDate = d => rounds.findIndex(r => d <= r.end);   // expected money, recurring, promises
+  const byStmt = m => m < rounds[0].s ? 0 : rounds.findIndex(r => r.s === m);   // card items: by STATEMENT month, never by a stray date
+  const clamp = (d, i) => d < rounds[i].from ? rounds[i].from : d > rounds[i].end ? rounds[i].end : d;
   for (const e of S.entries) if (e.expected && e.entry_date <= end) {   // expected money / not paid yet (late ones count today)
-    const late = e.entry_date < today;
-    ev.push({ date: late ? today : e.entry_date, amt: e.kind === 'income' ? Number(e.amount) : -Number(e.amount), label: e.description || catName(e.category_id),
+    const late = e.entry_date < today, date = late ? today : e.entry_date;
+    ev.push({ r: byDate(date), date, amt: e.kind === 'income' ? Number(e.amount) : -Number(e.amount), label: e.description || catName(e.category_id),
       sub: (e.kind === 'income' ? 'Expected' : 'Not paid yet') + (late ? ` · late, was ${dateLabel(e.entry_date)}` : ''), action: `data-action="openEntry" data-id="${e.id}"`, got: e.id, kind: e.kind });
   }
   for (const r of S.recurring) if (r.active) for (const iso of recurDates(r, addDays(today, 1), end)) {   // salary etc. after today
     if (S.entries.some(e => e.recurring_id === r.id && e.entry_date === iso)) continue;
-    ev.push({ date: iso, amt: r.kind === 'income' ? Number(r.amount) : -Number(r.amount), label: r.description, sub: 'Recurring', action: `data-action="openRec" data-id="${r.id}"` });
+    ev.push({ r: byDate(iso), date: iso, amt: r.kind === 'income' ? Number(r.amount) : -Number(r.amount), label: r.description, sub: 'Recurring', action: `data-action="openRec" data-id="${r.id}"` });
   }
-  for (const c of S.cards) for (let m = addMonths(monthOf(today), -2); m <= monthOf(end); m = addMonths(m, 1)) {   // card bills: full amount you pay the bank
-    const due = dueDate(c.id, m); if (!due || due < today || due > end) continue;
+  rounds.forEach((rd, i) => { for (const c of S.cards) {   // card bills of this round's statement: full amount you pay the bank
+    const m = rd.s, due = dueDate(c.id, m); if (due && due < today) continue;   // due date passed: treated as paid
     if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
     const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
-    ev.push({ date: due, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+    const date = clamp(due || rd.end, i);
+    ev.push({ r: i, date, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
     if (UI.oPromises) for (const p of bill.proj) for (const s of splitFromShares(p)) {   // riders' share of installment months not created yet (after any advance)
       if (isHousehold(s.person_id) || !(s.amount > 0)) continue;
       const adv = advLeft.has(s.person_id) ? advLeft.get(s.person_id) : personAdvance(s.person_id), use = Math.min(adv, s.amount); advLeft.set(s.person_id, r2(adv - use));
       const amt = r2(s.amount - use); if (amt <= 0.004) continue;
-      const k = `${s.person_id}|${due}|to collect`, o = owe.get(k) || { amt: 0, n: 0, since: m }; o.amt = r2(o.amt + amt); o.n++; owe.set(k, o);
+      const k = `${s.person_id}|${i}|${date}|to collect`, o = owe.get(k) || { amt: 0, n: 0, since: m }; o.amt = r2(o.amt + amt); o.n++; owe.set(k, o);
     }
-  }
-  // Riders: everything they still owe counts. On its promise date if one is set; otherwise by the due date of its bill.
-  // Overdue (or late promise) counts today. Household (you + partner) is left out: that money is already yours.
+  } });
+  // Riders: everything they still owe counts. With a promise date: on that date. Without: in the round of its statement, by the bill's due date.
+  // Older statements (overdue) count today. Household (you + partner) is left out: that money is already yours.
   let notCounted = 0;
   if (UI.oPromises) for (const c of S.charges) {
     if (isHousehold(c.person_id) || !live(c)) continue; const bal = balance(c); if (bal <= 0.004) continue;
-    const t = IX.tx.get(c.transaction_id), due = c.promise_date ? null : dueDate(t.card_id, t.month);
-    const when = c.promise_date || due, late = !when || when < today, date = late ? today : when;
-    if (date > end) { notCounted = r2(notCounted + bal); continue; }
-    const why = c.promise_date ? (late ? 'promised, late' : 'promised') : (late ? 'overdue' : 'to collect');
-    const k = `${c.person_id}|${date}|${why}`, o = owe.get(k) || { amt: 0, n: 0, since: t.month };
+    const t = IX.tx.get(c.transaction_id); let i, date, why;
+    if (c.promise_date) { date = c.promise_date < today ? today : c.promise_date; i = byDate(date); why = c.promise_date < today ? 'promised, late' : 'promised'; }
+    else { i = byStmt(t.month); const due = dueDate(t.card_id, t.month), late = t.month < rounds[0].s || !due || due < today;
+      date = i < 0 ? '' : late ? today : clamp(due, i); why = late ? 'overdue' : 'to collect'; }
+    if (i < 0) { notCounted = r2(notCounted + bal); continue; }
+    const k = `${c.person_id}|${i}|${date}|${why}`, o = owe.get(k) || { amt: 0, n: 0, since: t.month };
     o.amt = r2(o.amt + bal); o.n++; if (t.month < o.since) o.since = t.month; owe.set(k, o);
   }
-  for (const [k, o] of owe) { const [pid, date, why] = k.split('|');
-    ev.push({ date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? 'To collect, due with the bill' : why === 'promised' ? 'Promised to pay you' : 'Promised, late'} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
+  for (const [k, o] of owe) { const [pid, i, date, why] = k.split('|');
+    ev.push({ r: +i, date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? `To collect, ${monthLabel(o.since)} statement` : why === 'promised' ? 'Promised to pay you' : 'Promised, late'} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
   ev.sort((a, b) => a.date.localeCompare(b.date) || (b.amt > 0) - (a.amt > 0));   // same day: money in first
-  return { ev, notCounted };
+  return { ev: ev.filter(x => x.r >= 0), notCounted };
 }
-// Rounds of card dues: each round ends on the LAST card due date of that month (e.g. Oct 19).
-// Money that comes in up to that date pays that round; later money goes to the next round.
+// Rounds of card dues. Round = one statement month (Sep statement -> Oct dues). It ends on the LAST due date of that
+// month's bills (e.g. Oct 19). Money that comes in up to that date pays that round; later money goes to the next round.
 function dueRounds(today) {
   const out = [];
   for (let k = 0; out.length < 3 && k < 8; k++) {
-    const D = addMonths(monthOf(today), k), ds = S.cards.filter(c => c.active).map(c => dueDate(c.id, addMonths(D, -1))).filter(Boolean).sort();
+    const D = addMonths(monthOf(today), k), s = addMonths(D, -1);
+    const ds = S.cards.filter(c => c.active || billEstimate(c.id, s).amt > 0.004).map(c => dueDate(c.id, s)).filter(d => d && monthOf(d) === D).sort();
     if (!ds.length) continue; const end = ds[ds.length - 1];
     if (end < today || (out.length && end <= out[out.length - 1].end)) continue;
-    out.push({ m: D, end });
+    out.push({ m: D, s, end });
   }
-  if (!out.length) out.push({ m: monthOf(today), end: addDays(today, 30) });
+  if (!out.length) out.push({ m: monthOf(today), s: addMonths(monthOf(today), -1), end: addDays(today, 30) });
+  out.forEach((r, i) => { r.from = i ? addDays(out[i - 1].end, 1) : today; });
   return out;
 }
 function viewOutlook() {
   if (UI.cash === undefined) { try { const s = JSON.parse(localStorage.getItem('cs_cash') || 'null'); UI.cash = s ? Number(s.v) : null; UI.cashOn = s?.on || ''; } catch { UI.cash = null; } }
   const today = todayISO(), rounds = dueRounds(today), M = m => MON[+m.slice(5, 7) - 1];
-  const { ev, notCounted } = outlookEvents(today, rounds[rounds.length - 1].end);
+  const { ev, notCounted } = outlookEvents(today, rounds);
   let carry = r2(UI.cash || 0), from = today;
   for (const [i, r] of rounds.entries()) {   // running balance inside each round; what's left (or short) carries to the next
     r.from = from; r.start = carry; let bal = carry, min = carry, minDate = from, iMin = -1, shortDate = carry < -0.004 ? from : null;
-    r.rows = ev.filter(x => x.date >= from && x.date <= r.end).map((x, j) => { bal = r2(bal + x.amt); if (bal < min - 0.004) { min = bal; minDate = x.date; iMin = j; } if (bal < -0.004 && !shortDate) shortDate = x.date; return { ...x, bal }; });
+    r.rows = ev.filter(x => x.r === i).map((x, j) => { bal = r2(bal + x.amt); if (bal < min - 0.004) { min = bal; minDate = x.date; iMin = j; } if (bal < -0.004 && !shortDate) shortDate = x.date; return { ...x, bal }; });
     Object.assign(r, { left: bal, min, minDate, shortDate, back: min < -0.004 ? r.rows.slice(iMin + 1).find(x => x.bal >= -0.004) : null,
       inSum: sum(r.rows.filter(x => x.amt > 0), x => x.amt), outSum: -sum(r.rows.filter(x => x.amt < 0), x => x.amt), next: rounds[i + 1]?.m || addMonths(r.m, 1) });
     carry = bal; from = addDays(r.end, 1);
@@ -1280,7 +1298,11 @@ function viewOutlook() {
     <label class="small row" style="margin:10px 2px 0;gap:6px"><input type="checkbox" data-action="oProm" ${UI.oPromises ? 'checked' : ''}> Count money riders owe you</label>
     <div class="small muted" style="margin:4px 2px 0 26px">${UI.oPromises ? `Counted on their promise date, or by the due date of the bill if there's none. Overdue amounts count today. If someone won't pay in time, set a later promise date on that transaction.` : 'Off: only your own money counts (worst case).'}</div>
     ${notCounted > 0.004 ? `<div class="small muted" style="margin:4px 2px 0 26px">${peso(notCounted)} is promised or due after ${dateLabel(rounds[rounds.length - 1].end)}, so it isn't counted yet.</div>` : ''}
-    <div class="sec">${M(r.m)} dues · in ${peso(r.inSum)} · out ${peso(r.outSum)}</div>
+    ${(() => { const odd = S.transactions.filter(t => t.month === r.s && t.txn_date && t.txn_date >= addMonths(r.s, 1) && !isConv(t)).sort((a, b) => b.txn_date.localeCompare(a.txn_date));
+      return odd.length ? `<div class="card" style="margin-top:10px"><div class="b">Check ${odd.length} item${odd.length === 1 ? '' : 's'} on the ${monthLabel(r.s)} statement</div>
+        <div class="small muted">Bought in ${M(addMonths(r.s, 1))} or later, so ${odd.length === 1 ? 'it' : 'they'} may belong to the ${monthLabel(addMonths(r.s, 1))} statement (due in ${M(addMonths(r.s, 2))}). Tap one and change its Statement month.</div>
+        <div class="list">${odd.slice(0, 8).map(t => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">Bought ${dateLabel(t.txn_date)} · ${esc(cardCode(t.card_id))}</div></div><div class="right b">${peso(t.amount)}</div></div>`).join('')}</div></div>` : ''; })()}
+    <div class="sec">${M(r.m)} dues (${monthLabel(r.s)} statement) · in ${peso(r.inSum)} · out ${peso(r.outSum)}</div>
     <div class="card list">${startRow}
       ${r.rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
         ${x.got ? `<button class="btn sm" style="margin-top:6px" data-action="gotEntry" data-id="${x.got}">${x.kind === 'income' ? 'Got it' : 'Paid'}</button>` : ''}</div>
