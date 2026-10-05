@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.6';
+const VERSION = '1.7';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -204,7 +204,7 @@ const CASCADE = { transactions:[['charges','transaction_id']], charges:[['collec
                   installments:[['installment_shares','installment_id'],['transactions','installment_id']] };
 const DEFAULTS = { cards:{active:true}, people:{kind:'person',active:true}, statements:{paid_to_bank:false},
                    installments:{status:'active'}, transactions:{source:'manual'},
-                   categories:{active:true, sort:0}, entries:{planned:true}, recurring:{active:true} };
+                   categories:{active:true, sort:0}, entries:{planned:true, expected:false}, recurring:{active:true} };
 
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
@@ -246,6 +246,7 @@ function makeDemoDB(seed) {
     },
     async update(t, id, patch) { const r = data[t].find(x => x.id === id); Object.assign(r, patch); return { ...r }; },
     async remove(t, id) { cascadeLocal(data, t, id); },
+    async hasExpected() { return true; },
   };
 }
 function makeSupabaseDB(sb) {
@@ -268,6 +269,7 @@ function makeSupabaseDB(sb) {
     async insert(t, rows) { const { data, error } = await sb.from(t).insert(rows).select(); if (error) throw error; return data; },
     async update(t, id, patch) { const { data, error } = await sb.from(t).update(patch).eq('id', id).select().single(); if (error) throw error; return data; },
     async remove(t, id) { const { error } = await sb.from(t).delete().eq('id', id); if (error) throw error; },
+    async hasExpected() { const { error } = await sb.from('entries').select('expected').limit(1); return !error; },   // 4-expected.sql run?
   };
 }
 
@@ -275,7 +277,7 @@ let sb = null, db = null;
 let S = Object.fromEntries(TABLES.map(t => [t, []]));
 let IX = {};
 const UI = { view: 'home', month: addMonths(monthOf(todayISO()), -1), instFilter: 'active',
-             mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null,
+             mMonth: monthOf(todayISO()), mHalf: 0, mPlanned: 'all', mCards: true, mSel: null, mTab: 'sum', oDays: 30, oPromises: true,
              f: { scope: 'month', card: '', people: [], status: '', q: '' }, cf: { card: '', scope: 'month' } };
 
 // local mutations (DB first, then local copy)
@@ -458,7 +460,7 @@ function render() {
     <header class="top">
       <button class="iconbtn" data-action="menu" aria-label="Menu">${icon('menu')}</button>
       <h1>${LOGO}CardSplit${DEMO ? ' <span class="pill amber">demo</span>' : ''}</h1>
-      ${UI.view === 'people' ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">${icon('left')}</button><span>${monthLabel(UI.view === 'money' ? UI.mMonth : UI.month)}</span><button data-action="nextMonth" aria-label="Next month">${icon('right')}</button></div>`}
+      ${UI.view === 'people' || (UI.view === 'money' && UI.mTab === 'out') ? '' : `<div class="monthpick"><button data-action="prevMonth" aria-label="Previous month">${icon('left')}</button><span>${monthLabel(UI.view === 'money' ? UI.mMonth : UI.month)}</span><button data-action="nextMonth" aria-label="Next month">${icon('right')}</button></div>`}
     </header>
     <main class="wrap">${({ home: viewHome, tx: viewTx, inst: viewInst, chart: viewChart, money: viewMoney, people: viewPeople })[UI.view]()}</main>
     <nav class="bottom"><div class="in">
@@ -1074,7 +1076,7 @@ function moneyItems(from, to, opts = {}) {
   const plan = opts.planned ?? UI.mPlanned;
   const items = [];
   for (const e of S.entries) {
-    if (!inR(e.entry_date)) continue;
+    if (!inR(e.entry_date) || e.expected) continue;   // expected / not paid yet: shown in Cash outlook instead
     if (e.kind === 'expense' && plan === 'planned' && !e.planned) continue;      // filter applies to expenses only
     if (e.kind === 'expense' && plan === 'unplanned' && e.planned) continue;
     items.push({ kind: e.kind, date: e.entry_date, amount: Number(e.amount), cat: catName(e.category_id), desc: e.description || catName(e.category_id), src: 'entry', id: e.id, planned: e.planned, person_id: e.person_id });
@@ -1128,22 +1130,26 @@ function trendChart() {
 function viewMoney() {
   if (!S._money) return `<div class="card" style="margin-top:10px"><div class="b">One more setup step</div>
     <p class="small">Run <b>database/3-money.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data.</p></div>`;
+  if (UI.mTab === 'out') return viewOutlook();
   const p = moneyPeriod();
   const items = moneyItems(p.from, p.to);
   const inc = items.filter(x => x.kind === 'income'), exp = items.filter(x => x.kind === 'expense');
   const tInc = sum(inc, x => x.amount), tExp = sum(exp, x => x.amount), left = r2(tInc - tExp);
   const cardExp = exp.filter(x => x.src === 'card');
+  const pend = S.entries.filter(e => e.expected && e.entry_date >= p.from && e.entry_date < p.to);
+  const pIn = sum(pend.filter(e => e.kind === 'income'), e => e.amount), pOut = sum(pend.filter(e => e.kind === 'expense'), e => e.amount);
+  const expNote = pend.length ? `<div class="small muted" style="margin:8px 2px 0">Not counted yet: ${pIn ? `<b style="color:var(--paid)">+${peso(pIn)}</b> expected` : ''}${pIn && pOut ? ' · ' : ''}${pOut ? `<b>−${peso(pOut)}</b> not paid yet` : ''} · <button class="linkish" data-action="mTab" data-v="out">see Cash outlook</button></div>` : '';
   const entries = S.entries.filter(e => e.entry_date >= p.from && e.entry_date < p.to && (e.kind === 'income' || UI.mPlanned === 'all' || (UI.mPlanned === 'planned') === !!e.planned))
     .sort((a, b) => b.entry_date.localeCompare(a.entry_date) || b.id - a.id);
   const seg = (k, v, l, cur) => `<button class="${cur === v ? 'on' : ''}" data-action="${k}" data-v="${v}">${l}</button>`;
-  return `
-    <div class="seg" style="margin-top:6px">${seg('mHalf', 0, 'Whole month', UI.mHalf)}${seg('mHalf', 1, '1–15', UI.mHalf)}${seg('mHalf', 2, '16–end', UI.mHalf)}</div>
+  return `${moneyTabs()}
+    <div class="seg" style="margin-top:8px">${seg('mHalf', 0, 'Whole month', UI.mHalf)}${seg('mHalf', 1, '1–15', UI.mHalf)}${seg('mHalf', 2, '16–end', UI.mHalf)}</div>
     <div class="tiles" style="margin-top:10px">
       <div class="tile t-mint"><div class="lbl">Income</div><div class="val">${peso(tInc)}</div></div>
       <div class="tile t-peach"><div class="lbl">Expenses</div><div class="val">${peso(tExp)}</div></div>
       <div class="tile t-lav"><div class="lbl">Left</div><div class="val ${left < 0 ? 'over' : ''}">${peso(left)}</div></div>
       <div class="tile t-butter"><div class="lbl">Saved</div><div class="val">${tInc > 0 ? Math.round(left / tInc * 100) + '%' : '—'}</div></div>
-    </div>
+    </div>${expNote}
     <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
       <button class="btn sm pri" data-action="newEntry" data-kind="expense">＋ Expense</button>
       <button class="btn sm pri" data-action="newEntry" data-kind="income">＋ Income</button>
@@ -1163,22 +1169,112 @@ function viewMoney() {
     <div class="sec">Entries · ${esc(p.label)} (${entries.length})</div>
     <div class="card list">${entries.map(e => entryItem(e)).join('') || '<div class="empty">No entries yet. Tap ＋ Expense or ＋ Income.</div>'}</div>`;
 }
+/* ---------------- CASH OUTLOOK: money coming in vs bills, to decide on short borrowing ---------------- */
+const moneyTabs = () => `<div class="seg" style="margin-top:6px"><button class="${UI.mTab !== 'out' ? 'on' : ''}" data-action="mTab" data-v="sum">Summary</button><button class="${UI.mTab === 'out' ? 'on' : ''}" data-action="mTab" data-v="out">Cash outlook</button></div>`;
+function billEstimate(cardId, m) {   // amount on the bill if saved, else app total (+ installment months not created yet)
+  const st = IX.stmt.get(cardId + '|' + m);
+  if (st && st.total_due != null && st.total_due !== '') return { amt: r2(st.total_due), est: false };
+  let amt = sum(S.transactions.filter(t => t.card_id === cardId && t.month === m && !isConv(t)), t => t.amount);
+  for (const p of S.installments) {
+    if (p.card_id !== cardId || p.status !== 'active') continue;
+    const no = monthDiff(m, p.first_month) + 1; if (no < 1 || no > p.months) continue;
+    if ((IX.txByInst.get(p.id) || []).some(t => t.installment_no === no)) continue;
+    amt += Number(p.monthly_amount);
+  }
+  return { amt: r2(amt), est: true };
+}
+function recurDates(r, from, to) {   // days a recurring item falls on, within [from, to]
+  const out = [], start = r.start_date > from ? r.start_date : from;
+  for (let m = monthOf(start); m <= monthOf(to); m = addMonths(m, 1)) {
+    const [y, mo] = m.split('-').map(Number), dim = new Date(y, mo, 0).getDate();
+    for (const day of [...new Set(r.days.map(x => Math.min(x, dim)))].sort((a, b) => a - b)) { const iso = `${y}-${pad(mo)}-${pad(day)}`; if (iso >= start && iso <= to) out.push(iso); }
+  }
+  return out;
+}
+function outlookEvents(today, end) {
+  const ev = [];
+  for (const e of S.entries) if (e.expected && e.entry_date <= end) {   // expected money / not paid yet (late ones count today)
+    const late = e.entry_date < today;
+    ev.push({ date: late ? today : e.entry_date, amt: e.kind === 'income' ? Number(e.amount) : -Number(e.amount), label: e.description || catName(e.category_id),
+      sub: (e.kind === 'income' ? 'Expected' : 'Not paid yet') + (late ? ` · late, was ${dateLabel(e.entry_date)}` : ''), action: `data-action="openEntry" data-id="${e.id}"`, got: e.id, kind: e.kind });
+  }
+  for (const r of S.recurring) if (r.active) for (const iso of recurDates(r, addDays(today, 1), end)) {   // salary etc. after today
+    if (S.entries.some(e => e.recurring_id === r.id && e.entry_date === iso)) continue;
+    ev.push({ date: iso, amt: r.kind === 'income' ? Number(r.amount) : -Number(r.amount), label: r.description, sub: 'Recurring', action: `data-action="openRec" data-id="${r.id}"` });
+  }
+  for (const c of S.cards) for (let m = addMonths(monthOf(today), -2); m <= monthOf(end); m = addMonths(m, 1)) {   // card bills: full amount you pay the bank
+    const due = dueDate(c.id, m); if (!due || due < today || due > end) continue;
+    if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
+    const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
+    ev.push({ date: due, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+  }
+  let notCounted = 0; const prom = new Map();   // riders: only what they promised to pay on a date
+  for (const c of S.charges) {
+    if (isMe(c.person_id) || !live(c)) continue; const bal = balance(c); if (bal <= 0.004) continue;
+    if (UI.oPromises && c.promise_date && c.promise_date >= today && c.promise_date <= end) { const k = c.person_id + '|' + c.promise_date; prom.set(k, r2((prom.get(k) || 0) + bal)); }
+    else notCounted = r2(notCounted + bal);
+  }
+  for (const [k, amt] of prom) { const [pid, date] = k.split('|'); ev.push({ date, amt, label: personName(+pid), sub: 'Promised to pay you', action: `data-action="openPerson" data-id="${pid}"` }); }
+  ev.sort((a, b) => a.date.localeCompare(b.date) || (b.amt > 0) - (a.amt > 0));   // same day: money in first
+  return { ev, notCounted };
+}
+function viewOutlook() {
+  if (UI.cash === undefined) { try { const s = JSON.parse(localStorage.getItem('cs_cash') || 'null'); UI.cash = s ? Number(s.v) : null; UI.cashOn = s?.on || ''; } catch { UI.cash = null; } }
+  const today = todayISO(), end = addDays(today, UI.oDays);
+  const { ev, notCounted } = outlookEvents(today, end);
+  let bal = r2(UI.cash || 0), min = bal, minDate = today, shortDate = null, iMin = -1;
+  const rows = ev.map((x, i) => { bal = r2(bal + x.amt); if (bal < min - 0.004) { min = bal; minDate = x.date; iMin = i; } if (bal < -0.004 && !shortDate) shortDate = x.date; return { ...x, bal }; });
+  const back = min < -0.004 ? rows.slice(iMin + 1).find(x => x.bal >= -0.004) : null;
+  const inSum = sum(ev.filter(x => x.amt > 0), x => x.amt), outSum = -sum(ev.filter(x => x.amt < 0), x => x.amt);
+  const verdict = min < -0.004
+    ? `<div class="card t-rose"><div class="small muted">You may run short</div><div class="big over">${peso(min)}</div>
+        <div class="small" style="margin-top:4px">Lowest on <b>${dateLabel(minDate)}</b>. You'd need to borrow about <b>${peso(-min)}</b> by <b>${dateLabel(shortDate || today)}</b>.
+        ${back ? `You could pay it back on <b>${dateLabel(back.date)}</b>, after ${esc(back.label)} (${daysBetween(shortDate || today, back.date)} days).` : `You won't be back above ₱0 within these ${UI.oDays} days.`}</div></div>`
+    : `<div class="card t-mint"><div class="small muted">You're covered</div><div class="big">${peso(min)}</div>
+        <div class="small" style="margin-top:4px">That's your lowest point, on <b>${dateLabel(minDate)}</b>. No need to borrow in the next ${UI.oDays} days.</div></div>`;
+  return `${moneyTabs()}
+    <div class="card" style="margin-top:10px"><label class="f" style="margin:0"><span>Money you have now (bank + cash + GCash)</span>
+      <input class="in" type="number" inputmode="decimal" step="0.01" data-cash value="${UI.cash ?? ''}" placeholder="e.g. 12000"></label>
+      <div class="small muted" style="margin-top:4px">${UI.cash == null ? 'Type it in to start (counted as ₱0 for now). ' : UI.cashOn ? `Updated ${dateLabel(UI.cashOn)}. ` : ''}Saved on this device only.</div></div>
+    <div class="seg" style="margin-top:10px">${[30, 60, 90].map(n => `<button class="${UI.oDays === n ? 'on' : ''}" data-action="oDays" data-v="${n}">Next ${n} days</button>`).join('')}</div>
+    <div style="margin-top:10px">${verdict}</div>
+    <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      ${S._exp ? `<button class="btn sm pri" data-action="newExpected" data-kind="income">＋ Expected money</button><button class="btn sm" data-action="newExpected" data-kind="expense">＋ Upcoming expense</button>` : ''}
+      <button class="btn sm" data-action="openRecurring">Recurring (${S.recurring.filter(r => r.active).length})</button></div>
+    ${S._exp ? '' : `<div class="card small" style="margin-top:10px"><b>One more setup step</b> to add expected money: run <b>database/4-expected.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data. Recurring salary and card bills already show below.</div>`}
+    <label class="small row" style="margin:10px 2px 0;gap:6px"><input type="checkbox" data-action="oProm" ${UI.oPromises ? 'checked' : ''}> Count riders' promised payments</label>
+    ${notCounted > 0.004 ? `<div class="small muted" style="margin:4px 2px 0 26px">Riders still owe you ${peso(notCounted)} with no promise date in these ${UI.oDays} days. Not counted. Collecting some of it could mean you don't need to borrow.</div>` : ''}
+    <div class="sec">Day by day · in ${peso(inSum)} · out ${peso(outSum)}</div>
+    <div class="card list">
+      <div class="item"><div class="grow"><div class="b">Now</div><div class="small muted">${dateLabel(today)} · money you have</div></div><div class="right b">${peso(UI.cash || 0)}</div></div>
+      ${rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
+        ${x.got ? `<button class="btn sm" style="margin-top:6px" data-action="gotEntry" data-id="${x.got}">${x.kind === 'income' ? 'Got it' : 'Paid'}</button>` : ''}</div>
+        <div class="right"><div class="b" style="${x.amt > 0 ? 'color:var(--paid)' : ''}">${x.amt > 0 ? '+' : '−'}${peso(Math.abs(x.amt))}</div><div class="small ${x.bal < -0.004 ? 'over' : 'muted'}">${peso(x.bal)}</div></div></div>`).join('')}
+      ${rows.length ? '' : '<div class="empty">Nothing coming in or going out yet. Add expected money or a recurring salary.</div>'}</div>
+    <p class="small muted">Card bills are the full amount you pay the bank: the amount on the bill if you saved it, otherwise the app total. Riders' payments count only when they gave a promise date. Late expected money still counts until you tap Got it or delete it.</p>`;
+}
+document.addEventListener('change', e => {
+  if (!e.target.matches?.('[data-cash]')) return;
+  UI.cash = num(e.target.value); UI.cashOn = todayISO();
+  try { localStorage.setItem('cs_cash', JSON.stringify({ v: UI.cash, on: UI.cashOn })); } catch {}
+  render();
+});
 function entryItem(e) {
   const who = e.person_id ? personName(e.person_id) : '';
   return `<div class="item" data-action="openEntry" data-id="${e.id}"><div class="grow"><div class="b ell">${esc(e.description || catName(e.category_id))}</div>
-    <div class="small muted">${dateLabel(e.entry_date)} · ${esc(catName(e.category_id))}${who ? ' · ' + esc(who) : ''}${e.method ? ' · ' + esc(e.method) : ''}${e.kind === 'expense' && !e.planned ? ' · <span class="pill amber">Unplanned</span>' : ''}${e.recurring_id ? ' · ↻' : ''}</div></div>
+    <div class="small muted">${dateLabel(e.entry_date)} · ${esc(catName(e.category_id))}${who ? ' · ' + esc(who) : ''}${e.method ? ' · ' + esc(e.method) : ''}${e.kind === 'expense' && !e.planned ? ' · <span class="pill amber">Unplanned</span>' : ''}${e.expected ? ` · <span class="pill green">${e.kind === 'income' ? 'Expected' : 'Not paid yet'}</span>` : ''}${e.recurring_id ? ' · ↻' : ''}</div></div>
     <div class="right b" style="color:${e.kind === 'income' ? 'var(--paid)' : 'inherit'}">${e.kind === 'income' ? '+' : '−'}${peso(e.amount)}</div></div>`;
 }
 const catsOf = kind => S.categories.filter(c => c.kind === kind && c.active).sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
 const hhOpts = sel => householdPeople().map(p => `<option value="${p.id}" ${p.id === sel ? 'selected' : ''}>${esc(p.name)}</option>`).join('') + '<option value="__new">＋ New person…</option>';
 const HH_HINT = `<div class="small muted" style="margin:2px 2px 6px">Only you and people marked <b>Household</b> show here. Already in People (e.g. as a rider)? Open them on People and tick <b>Household (partner)</b>.</div>`;
-function openEntry(id, kind) {
+function openEntry(id, kind, opts) {
   const e = id ? S.entries.find(x => x.id === id) : null;
   const k = e ? e.kind : (kind || 'expense');
   const d = e ? { ...e, amount: String(e.amount), description: e.description || '', note: e.note || '', method: e.method || '' }
-              : { id: null, kind: k, amount: '', entry_date: todayISO(), category_id: catsOf(k)[0]?.id, person_id: IX.me, method: k === 'income' ? 'Bank transfer' : 'Cash', planned: true, description: '', note: '' };
+              : { id: null, kind: k, amount: '', entry_date: todayISO(), category_id: catsOf(k)[0]?.id, person_id: IX.me, method: k === 'income' ? 'Bank transfer' : 'Cash', planned: true, description: '', note: '', expected: !!(opts && opts.expected) };
   const sheet = { title: e ? (k === 'income' ? 'Income' : 'Expense') : (k === 'income' ? 'New income' : 'New expense'), draft: d,
-    body: () => entryBody(d), mount: o => { bindDraft(o, d); o.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); d[b.dataset.pick] = b.dataset.pick === 'planned' ? b.dataset.v === '1' : (b.dataset.pick === 'category_id' ? +b.dataset.v : b.dataset.v); redrawTop(); })); },
+    body: () => entryBody(d), mount: o => { bindDraft(o, d); o.querySelectorAll('[data-pick]').forEach(b => b.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); d[b.dataset.pick] = ['planned', 'expected'].includes(b.dataset.pick) ? b.dataset.v === '1' : (b.dataset.pick === 'category_id' ? +b.dataset.v : b.dataset.v); redrawTop(); })); },
     foot: () => `${d.id ? '<button class="btn danger" data-action="delEntry">Delete</button>' : ''}<div class="grow">${d.id ? '' : '<button class="btn" data-action="saveEntry" data-more="1">Save &amp; add another</button>'}<button class="btn pri" data-action="saveEntry">Save</button></div>` };
   openSheet(sheet);
 }
@@ -1197,7 +1293,8 @@ function entryBody(d) {
       <label class="f"><span>${d.kind === 'income' ? 'Whose income' : 'Paid by'}</span><select class="in" data-k="person_id" data-num data-hh>${hhOpts(d.person_id)}</select></label>
       <label class="f"><span>${d.kind === 'income' ? 'Received via' : 'Paid with'}</span><select class="in" data-k="method">${METHODS.map(m => `<option ${m === d.method ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
     </div>
-    ${d.kind === 'expense' ? `<div class="small muted" style="margin:4px 2px">Was this expected?</div><div class="chips">${chip('planned', '1', 'Planned', d.planned)}${chip('planned', '0', 'Unplanned / surprise', !d.planned)}</div>` : ''}
+    ${S._exp ? `<div class="small muted" style="margin:4px 2px">Status</div><div class="chips">${chip('expected', '0', d.kind === 'income' ? 'Received' : 'Paid', !d.expected)}${chip('expected', '1', d.kind === 'income' ? 'Not received yet (expected)' : 'Not paid yet (upcoming)', !!d.expected)}</div>` : ''}
+    ${d.kind === 'expense' ? `<div class="small muted" style="margin:4px 2px">Was it planned?</div><div class="chips">${chip('planned', '1', 'Planned', d.planned)}${chip('planned', '0', 'Unplanned / surprise', !d.planned)}</div>` : ''}
     ${HH_HINT}
     <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
     <p class="small muted">Don't add card bill payments here — your card purchases are already counted from the Cards tab.</p>`;
@@ -1208,7 +1305,7 @@ async function saveEntry(more) {
   if (!(amount > 0)) return toast('Add the amount');
   if (!d.category_id) return toast('Pick a category');
   const row = { kind: d.kind, amount, entry_date: d.entry_date || todayISO(), category_id: d.category_id, person_id: d.person_id || IX.me,
-                method: d.method || null, planned: d.kind === 'income' ? true : !!d.planned, description: d.description.trim() || null, note: d.note.trim() || null };
+                method: d.method || null, planned: d.kind === 'income' ? true : !!d.planned, description: d.description.trim() || null, note: d.note.trim() || null, ...(S._exp ? { expected: !!d.expected } : {}) };
   try {
     if (d.id) await upd('entries', d.id, row); else await ins('entries', [row]);
     if (more) { Object.assign(d, { amount: '', description: '', note: '' }); redrawTop(); render(); toast('Saved — add the next one'); setTimeout(() => document.querySelector('.overlay:last-child [data-k=amount]')?.focus(), 50); }
@@ -1640,6 +1737,13 @@ const A = {
   moneyCat: el => openMoneyCat(el.dataset.kind, el.dataset.cat),
   moneyPick: el => { UI.mSel = el.dataset.m; render(); },
   mHalf: el => { UI.mHalf = +el.dataset.v; render(); },
+  mTab: el => { UI.mTab = el.dataset.v; render(); scrollTo(0, 0); },
+  oDays: el => { UI.oDays = +el.dataset.v; render(); },
+  oProm: () => { UI.oPromises = !UI.oPromises; render(); },
+  newExpected: el => openEntry(null, el.dataset.kind, { expected: true }),
+  gotEntry: async el => { const e = S.entries.find(x => x.id === +el.dataset.id); if (!e) return;
+    try { await upd('entries', e.id, { expected: false, entry_date: todayISO() }); render(); toast(e.kind === 'income' ? 'Marked received. Update "Money you have now" too.' : 'Marked paid. Update "Money you have now" too.'); } catch (err) { toast('Could not save: ' + (err.message || err)); } },
+  outStmt: el => { UI.month = el.dataset.m; openStmt(+el.dataset.card); },
   mPlanned: el => { UI.mPlanned = el.dataset.v; render(); },
   mCards: () => { UI.mCards = !UI.mCards; render(); },
   closeSheet: () => { const s = SHEETS[SHEETS.length - 1]; if (s?.resolve) s.resolve(false); closeSheet(); },
@@ -1817,6 +1921,7 @@ async function loadData() {
   try {
     S = await db.loadAll();
     S._money = OPT_TABLES.every(t => Array.isArray(S[t])); for (const t of OPT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
+    S._exp = S._money && await db.hasExpected().catch(() => false);
     reindex();
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
     const made = await ensureInstallmentMonths();

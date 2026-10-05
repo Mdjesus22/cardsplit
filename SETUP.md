@@ -10,10 +10,12 @@ You will make 2 free accounts:
 |---|---|---|
 | `database/1-schema.sql` | Creates the tables and security rules | Supabase SQL Editor (run once) |
 | `../cardsplit-PRIVATE/2-seed-PRIVATE.sql` | Your Jan 2025 – Feb 2026 data from Sheet20. Kept **outside** this repo on purpose. | Supabase SQL Editor (run once). **Never upload to GitHub.** |
+| `database/3-money.sql` | Money tab tables (income, expenses, recurring) | Supabase SQL Editor (run once, Part F) |
+| `database/4-expected.sql` | Lets you add expected money (not received yet) | Supabase SQL Editor (run once, Part G) |
 | `index.html` | The app | GitHub (this repo) |
 | `.github/workflows/keep-alive.yml` | Daily ping so Supabase never pauses | GitHub (this repo) |
 
-Both SQL files only **add** things. They never drop or delete anything. If you run one twice, it either skips what already exists (schema) or stops with a message and changes nothing (seed).
+All SQL files only **add** things. They never drop or delete anything. If you run one twice, it either skips what already exists (schema) or stops with a message and changes nothing (seed).
 
 ---
 
@@ -126,9 +128,20 @@ If the app says **"No transactions found"**, tap **Copy the PDF text for Claude*
 4. Add your salary as **Recurring** (Money → Recurring → e.g. days `3, 18`), so it's added automatically each payday.
 
 What counts:
-- **Expenses** = your household's share of card purchases (by purchase date) + cash/GCash/debit expenses you add.
+- **Expenses** = your household's share of card bills, counted in the month the bill is **due** (the Sep statement counts in Oct) + cash/GCash/debit expenses you add.
 - **Not counted:** riders' shares, paying your card bill (already counted as purchases), and money riders pay back to you.
 - Tag surprise spending as **Unplanned** and filter Planned/Unplanned at the top of Money.
+
+## Part G — Expected money and Cash outlook (v1.7)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/4-expected.sql` and click **Run**. It only adds one column. It's safe to run twice.
+2. Reload the app (Ctrl+Shift+R). Go to **Money** → **Cash outlook**.
+3. Type **Money you have now** (bank + cash + GCash). It's saved on that phone or laptop only, so update it when it changes.
+4. Tap **＋ Expected money** for salary or other money that hasn't come in yet (pick the date you expect it). Tap **＋ Upcoming expense** for something you'll pay soon (not card bills).
+5. The outlook adds up, day by day: expected money, recurring salary and bills, card bills you haven't ticked as paid, and riders' payments that have a **promise date**. It tells you if you'll run short, how much to borrow, by when, and when you can pay it back.
+6. When the money arrives, tap **Got it**, then update **Money you have now**.
+
+Expected money doesn't count in the Money **Summary** until you tap **Got it**.
 
 ---
 
