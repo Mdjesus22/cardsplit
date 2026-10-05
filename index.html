@@ -194,7 +194,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '1.9';
+const VERSION = '2.0';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries'];
@@ -424,10 +424,10 @@ function redrawTop() {
   body.innerHTML = s.body(); if (s.foot) o.querySelector('.sf').innerHTML = s.foot();
   body.scrollTop = st; s.mount?.(o);
 }
-function ask(message, okLabel = 'OK', danger = false) {
+function ask(message, okLabel = 'OK', danger = false, noLabel = 'Cancel') {
   return new Promise(res => {
     openSheet({ title: 'Please confirm', body: () => `<p>${esc(message)}</p>`,
-      foot: () => `<div class="grow"><button class="btn" data-action="askNo">Cancel</button><button class="btn ${danger ? 'danger' : 'pri'}" data-action="askYes">${esc(okLabel)}</button></div>`,
+      foot: () => `<div class="grow"><button class="btn" data-action="askNo">${esc(noLabel)}</button><button class="btn ${danger ? 'danger' : 'pri'}" data-action="askYes">${esc(okLabel)}</button></div>`,
       resolve: res });
   });
 }
@@ -679,7 +679,7 @@ function chargeBox(d, c, i, people) {
     ${saved && !isMe(c.person_id) ? `
       <div class="pay"><span><span class="chip ${st}">${STATUS_LABEL[st]}</span> Received ${peso(received(saved))} · Left <b>${peso(balance(saved))}</b></span>
         <button class="btn sm" data-action="addPay" data-charge="${saved.id}">+ Payment</button></div>
-      ${pays.length ? `<div class="plist">${pays.map(p => `<div><span>${dateLabelY(p.received_on)} · ${peso(p.amount)}${p.note ? ' · ' + esc(p.note) : ''}</span><button class="linkish" data-action="rmPay" data-id="${p.id}">remove</button></div>`).join('')}</div>` : ''}
+      ${pays.length ? `<div class="plist">${pays.map(p => `<div><span>${dateLabelY(p.received_on)} · ${peso(p.amount)}${p.note ? ' · ' + esc(p.note) : ''}</span><span>${Number(p.amount) > 0 && !SYS_PAY.has(p.note) ? `<button class="linkish" data-action="editPay" data-id="${p.id}">edit</button> · ` : ''}<button class="linkish" data-action="rmPay" data-id="${p.id}">remove</button></span></div>`).join('')}</div>` : ''}
       <div class="extra">
         <input class="in" type="date" data-ci="${i}" data-ck="promise_date" value="${esc(c.promise_date)}" title="Will pay the rest on">
         <input class="in" data-ci="${i}" data-ck="note" value="${esc(c.note)}" placeholder="Note (e.g. pay on 15th salary)">
@@ -738,15 +738,16 @@ async function saveTx() {
   } catch (e) { console.error(e); toast('Could not save: ' + (e.message || e)); }
 }
 
-function openPay(chargeId) {
-  const ch = IX.charge.get(chargeId);
-  const d = { amount: String(balance(ch)), received_on: todayISO(), note: '' };
-  openSheet({ title: `Payment from ${personName(ch.person_id)}`, draft: d,
-    body: () => `<p class="small muted">Still to pay: <b>${peso(balance(ch))}</b> of ${peso(ch.amount)}</p>
+const SYS_PAY = new Set(['Paid using credit', 'Credit used on other items', 'Advance used', 'Paid from advance']);
+function openPay(chargeId, payId) {
+  const ch = IX.charge.get(chargeId), pay = payId ? S.collections.find(x => x.id === payId) : null;
+  const d = pay ? { id: pay.id, amount: String(pay.amount), received_on: pay.received_on, note: pay.note || '' } : { amount: String(balance(ch)), received_on: todayISO(), note: '' };
+  openSheet({ title: `${pay ? 'Edit payment' : 'Payment'} from ${personName(ch.person_id)}`, draft: d,
+    body: () => `<p class="small muted">Still to pay: <b>${peso(balance(ch) + (pay ? Number(pay.amount) : 0))}</b> of ${peso(ch.amount)}${pay ? ' (before this payment)' : ''}</p>
       <label class="f"><span>Amount received (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="amount" value="${esc(d.amount)}"></label>
       <label class="f"><span>Date received</span><input class="in" type="date" data-k="received_on" value="${d.received_on}"></label>
-      <label class="f"><span>Note (optional)</span><input class="in" data-k="note" placeholder="e.g. GCash"></label>`,
-    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="savePay" data-charge="${chargeId}">Save payment</button></div>`,
+      <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}" placeholder="e.g. GCash"></label>`,
+    foot: () => `${pay ? `<button class="btn danger" data-action="rmPay" data-id="${pay.id}" data-close="1">Remove</button>` : ''}<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="savePay" data-charge="${chargeId}">${pay ? 'Save changes' : 'Save payment'}</button></div>`,
     mount: o => bindDraft(o, d) });
 }
 
@@ -1822,12 +1823,19 @@ const A = {
   delTx: async () => { const d = SHEETS[SHEETS.length - 1].draft; if (!(await ask('Delete this transaction and its payments?', 'Delete', true))) return;
     try { await del('transactions', d.id); closeSheet(); render(); toast('Deleted'); } catch (e) { toast('Could not delete: ' + e.message); } },
   addPay: el => openPay(+el.dataset.charge),
-  savePay: async el => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); if (!amt) return toast('Add the amount');
-    const ch = IX.charge.get(+el.dataset.charge), left = balance(ch);
+  savePay: async el => { const d = SHEETS[SHEETS.length - 1].draft; let amt = r2(num(d.amount)), note = (d.note || '').trim();
+    // the note is just a number different from the amount (e.g. note "1300", amount 2,405.36) -> ask which is right
+    const nn = /^₱?\s*[\d,]+(\.\d{1,2})?$/.test(note) ? r2(Number(note.replace(/[₱,\s]/g, ''))) : 0;
+    if (nn > 0 && Math.abs(nn - amt) > 0.004 && await ask(`The note says ${peso(nn)} but the amount is ${peso(amt)}. How much did you actually receive?`, `${peso(nn)}`, false, `${peso(amt)}`)) { amt = nn; note = ''; }
+    if (!amt) return toast('Add the amount');
+    const ch = IX.charge.get(+el.dataset.charge), old = d.id ? Number(S.collections.find(x => x.id === d.id)?.amount || 0) : 0, left = r2(balance(ch) + old);
     if (amt > left + 0.004 && !(await ask(`That's ${peso(r2(amt - left))} more than what's left (${peso(left)}). The extra is saved as an advance for ${personName(ch.person_id)} and pays their next installment months automatically. Save?`, 'Save'))) return;
-    try { await ins('collections', [{ charge_id: +el.dataset.charge, amount: amt, received_on: d.received_on || todayISO(), note: (d.note || '').trim() || null }]); closeSheet(); redrawTop(); render(); toast('Payment saved'); }
+    const row = { amount: amt, received_on: d.received_on || todayISO(), note: note || null };
+    try { if (d.id) await upd('collections', d.id, row); else await ins('collections', [{ charge_id: +el.dataset.charge, ...row }]);
+      closeSheet(); redrawTop(); render(); toast(d.id ? `Payment updated · left ${peso(balance(ch))}` : 'Payment saved'); }
     catch (e) { toast('Could not save: ' + e.message); } },
-  rmPay: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; await del('collections', +el.dataset.id); redrawTop(); render(); },
+  editPay: el => { const p = S.collections.find(x => x.id === +el.dataset.id); if (p) openPay(p.charge_id, p.id); },
+  rmPay: async el => { if (!(await ask('Remove this payment?', 'Remove', true))) return; await del('collections', +el.dataset.id); if (el.dataset.close) closeSheet(); redrawTop(); render(); },
   markAllPaid: async () => { const d = SHEETS[SHEETS.length - 1].draft;
     const rows = d.charges.filter(c => c.id).map(c => IX.charge.get(c.id)).filter(c => c && live(c) && !isMe(c.person_id) && balance(c) > 0.004).map(c => ({ charge_id: c.id, amount: balance(c), received_on: todayISO(), note: 'Marked paid' }));
     if (!rows.length) return; await ins('collections', rows); redrawTop(); render(); toast('Marked paid'); },
