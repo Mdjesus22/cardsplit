@@ -176,6 +176,13 @@ Expected money doesn't count in the Money **Summary** until you tap **Got it**. 
 4. Cash outlook: you pay in cash on the **due date**; their money comes in on **their usual pay day**. Each lands in the right dues round. Bills don't change your card rounds (Oct dues still end on the last *card* due date).
 5. Only your own share (if any) counts in the Money summary.
 
+## Part K — Short note on a card item (v2.9)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/8-item-note.sql` and click **Run**. It only adds one empty column. It's safe to run twice.
+2. Open any card item (Cards → tap the item) → **What is it? (short note, optional)** → type e.g. `diapers, soap` → **Save**.
+3. The note shows in small grey text beside the name, e.g. **SHOPEE PH MANDALUYONG** diapers, soap. It shows on Cards, People and Money → category list.
+4. The Cards search also finds notes (search `diaper` finds that Shopee item).
+
 ---
 
 ## Good to know

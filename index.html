@@ -56,6 +56,9 @@ nav.bottom button.add .ic{width:48px;height:48px;border-radius:50%;background:va
 .big{font-size:22px;font-weight:700}
 .b{font-weight:600}
 .ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dline{display:flex;gap:6px;align-items:baseline;min-width:0}
+.dline .ell{min-width:0}
+.tnote{font-size:12.5px;font-weight:400;color:var(--muted);white-space:nowrap;flex-shrink:0;max-width:45%;overflow:hidden;text-overflow:ellipsis}
 .tiles{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .tile{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow);padding:12px}
 .tile .lbl{font-size:12px;color:var(--muted)}
@@ -196,7 +199,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.8';
+const VERSION = '2.9';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
@@ -596,15 +599,16 @@ function filteredTx() {
     const ppl = f.people || [];
     if (ppl.length && !cs.some(c => ppl.includes(c.person_id))) return false;
     if (f.status) { const pool = ppl.length ? cs.filter(c => ppl.includes(c.person_id)) : cs; if (!pool.some(c => chargeStatus(c) === f.status)) return false; }
-    if (q && !(t.description || '').toLowerCase().includes(q) && !(t.category || '').toLowerCase().includes(q)) return false;
+    if (q && !(t.description || '').toLowerCase().includes(q) && !(t.category || '').toLowerCase().includes(q) && !(t.note || '').toLowerCase().includes(q)) return false;
     return true;
   }).sort((a, b) => (b.month.localeCompare(a.month)) || ((b.txn_date || '').localeCompare(a.txn_date || '')) || (b.id - a.id));
 }
+const dline = (t, bold = true) => `<div class="${bold ? 'b ' : ''}dline"><span class="ell">${esc(t.description)}</span>${t.note ? `<span class="tnote">${esc(t.note)}</span>` : ''}</div>`;
 function txItem(t) {
   const cs = IX.chargesByTx.get(t.id) || [];
   const inst = t.installment_id ? IX.inst.get(t.installment_id) : null;
   return `<div class="item" data-action="openTx" data-id="${t.id}">
-    <div class="grow"><div class="b ell">${esc(t.description)}</div>
+    <div class="grow">${dline(t)}
       <div class="small muted">${stmtTag(t)}${t.txn_date ? ' · bought ' + dateLabel(t.txn_date) : ''} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
       <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' || st === 'converted' ? '' : st === 'vault' ? ' ' + peso(c.amount) + ' · safety box' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
     <div class="right b">${peso(t.amount)}</div></div>`;
@@ -617,7 +621,7 @@ function viewTx() {
       <button class="${f.scope === 'month' ? 'on' : ''}" data-action="txScope" data-v="month">${monthLabel(UI.month)}</button>
       <button class="${f.scope === 'year' ? 'on' : ''}" data-action="txScope" data-v="year">Last 12 months</button>
       <button class="${f.scope === 'all' ? 'on' : ''}" data-action="txScope" data-v="all">All months</button></div>
-    <input id="fq" class="in" style="margin-top:10px" placeholder="Search description or category" value="${esc(f.q)}" data-filter="q">
+    <input id="fq" class="in" style="margin-top:10px" placeholder="Search description, note or category" value="${esc(f.q)}" data-filter="q">
     <div class="filters">
       <select class="in" data-filter="card">${opt('', 'All cards', f.card)}${S.cards.map(c => opt(c.id, c.code, f.card)).join('')}</select>
       <button class="in" data-action="pickPeople" style="text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center"><span class="ell">${peopleLabel(f.people)}</span><span class="muted">▾</span></button>
@@ -707,6 +711,7 @@ function txBody(d) {
       : d.id && !d.installment_id ? `<button class="btn sm" style="margin-top:12px" data-action="openConvert" data-id="${d.id}">🔁 This was converted to installment</button>` : ''}
     ${inst ? `<div class="card small" style="margin-top:12px">Installment <b>${d.installment_no} of ${inst.months}</b> · ${esc(inst.item)} <button class="linkish" data-action="openPlan" data-id="${inst.id}">open plan</button></div>` : ''}
     <label class="f"><span>Description</span><input class="in" data-k="description" value="${esc(d.description)}" placeholder="e.g. Lazada – phone case"></label>
+    ${S._txnote ? `<label class="f"><span>What is it? (short note, optional)</span><input class="in" data-k="note" value="${esc(d.note || '')}" maxlength="60" placeholder="e.g. diapers, soap"></label>` : ''}
     <div class="grid2">
       <label class="f"><span>Amount (₱)</span><input class="in" data-k="amount" type="number" inputmode="decimal" step="0.01" value="${esc(d.amount)}"></label>
       <label class="f"><span>Card</span><select class="in" data-k="card_id" data-num>${S.cards.map(c => `<option value="${c.id}" ${c.id === d.card_id ? 'selected' : ''}>${esc(c.code)}</option>`).join('')}</select></label>
@@ -779,7 +784,7 @@ async function saveTx() {
   if (!charges.length) return toast('Add at least one person');
   if (new Set(charges.map(c => c.person_id)).size !== charges.length) return toast('Same person is listed twice');
   if (Math.abs(r2(amount - sum(charges, c => c.amount))) >= 0.005) return toast('Who pays must add up to the amount');
-  const row = { description: d.description.trim(), amount, card_id: d.card_id, month: d.month, txn_date: d.txn_date || null, category: (d.category || '').trim() || null };
+  const row = { description: d.description.trim(), amount, card_id: d.card_id, month: d.month, txn_date: d.txn_date || null, category: (d.category || '').trim() || null, ...(S._txnote ? { note: (d.note || '').trim() || null } : {}) };
   try {
     let txId = d.id;
     if (d.id) await upd('transactions', d.id, row);
@@ -1168,24 +1173,24 @@ function personBody(p, d) {
       <div id="alloc">${allocPreview(p.id, num(d.pay))}</div>
       <button class="btn pri block" style="margin-top:10px" data-action="personPay" data-id="${p.id}">Save payment</button></div>` : ''}
     <div class="sec">Unpaid items (${items.length})</div>
-    <div class="card list">${items.map(({ c, t }) => { const st = chargeStatus(c); return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
+    <div class="card list">${items.map(({ c, t }) => { const st = chargeStatus(c); return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow">${dline(t)}
       <div class="small muted">${stmtTag(t)} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}${c.promise_date ? ` · promised ${dateLabel(c.promise_date)}` : ''}</div></div>
       <div class="right"><div class="b">${peso(balance(c))}</div><span class="chip ${st}">${STATUS_LABEL[st]}</span></div></div>`; }).join('') || '<div class="empty">Nothing unpaid 🎉</div>'}</div>
     ${later.length ? `<div class="sec">Not due yet (${later.length}) · ${peso(sum(later, x => balance(x.c)))}</div>
     <div class="small muted" style="margin:0 2px 6px">On statements after ${monthLabel(dueStmt())}. They move up to Unpaid items once their statement is the one being paid.</div>
-    <div class="card list">${later.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div>
+    <div class="card list">${later.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow">${dline(t, false)}
       <div class="small muted">${stmtTag(t)}${(d => d ? ' · due ' + dateLabel(d) : '')(dueDate(t.card_id, t.month))} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}</div></div>
       <div class="right b">${peso(balance(c))}</div></div>`).join('')}</div>` : ''}
     ${(() => { const cr = creditCharges(p.id); if (!cr.length) return '';
       return `<div class="sec">Credits (${cr.length}) · ${peso(-sum(cr, x => balance(x.c)))}</div>
       <p class="small muted" style="margin:0 2px 6px">Money in their favour — a refund, or a payment bigger than the item. It's already taken off "Still owes you". If a credit is the bank cancelling a straight purchase that was <b>converted to installment</b>, tap 🔁 on it instead — then it's paired with the purchase and nobody owes either.</p>
-      <div class="card list">${cr.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
+      <div class="card list">${cr.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow">${dline(t)}
         <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))} · ${Number(c.amount) < 0 ? 'refund / credit line' : `<b>advance</b> · paid ${peso(received(c))} on ${peso(c.amount)}`}</div>
         ${Number(c.amount) < 0 ? `<button class="btn sm" style="margin-top:6px" data-action="openConvert" data-id="${t.id}">🔁 Converted to installment</button>` : ''}</div>
         <div class="right b" style="color:var(--paid)">${peso(-balance(c))}</div></div>`).join('')}</div>
       ${allOpen.length ? `<button class="btn block" style="margin-top:8px" data-action="useCredits" data-id="${p.id}">Use advance / credits to pay unpaid items (oldest first)</button>` : ''}`; })()}
     <div class="sec">Recent payments</div>
-    <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
+    <div class="card list">${pays.map(({ x, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow">${dline(t, false)}<div class="small muted">${dateLabelY(x.received_on)}${x.note ? ' · ' + esc(x.note) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">No payments yet</div>'}</div>
     <div class="sec">Edit</div>
     <div class="card"><div class="grid2"><label class="f"><span>Name</span><input class="in" data-k="name" value="${esc(d.name)}"></label>
       <label class="f"><span>Type</span><select class="in" data-k="kind">${['person', 'group', 'company', 'bucket', 'me'].map(k => `<option ${k === d.kind ? 'selected' : ''}>${k}</option>`).join('')}</select></label></div>
@@ -1272,7 +1277,7 @@ function moneyItems(from, to, opts = {}) {
       if (!isHousehold(c.person_id)) continue;
       const t = IX.tx.get(c.transaction_id); if (!t || isConv(t)) continue;
       const d = dueDate(t.card_id, t.month) || addMonths(t.month, 1); if (!inR(d)) continue;   // bill due date, not purchase date
-      items.push({ kind: 'expense', date: d, amount: Number(c.amount), cat: cardCategory(t), desc: t.description, src: 'card', id: t.id, person_id: c.person_id, card: t.card_id, stmt: t.month });
+      items.push({ kind: 'expense', date: d, amount: Number(c.amount), cat: cardCategory(t), desc: t.description, note: t.note, src: 'card', id: t.id, person_id: c.person_id, card: t.card_id, stmt: t.month });
     }
   }
   return items;
@@ -1500,7 +1505,7 @@ function viewOutlook() {
     ${(() => { const odd = S.transactions.filter(t => t.month === r.s && t.txn_date && t.txn_date >= addMonths(r.s, 1) && !isConv(t)).sort((a, b) => b.txn_date.localeCompare(a.txn_date));
       return odd.length ? `<div class="card" style="margin-top:10px"><div class="b">Check ${odd.length} item${odd.length === 1 ? '' : 's'} on the ${monthLabel(r.s)} statement</div>
         <div class="small muted">Bought in ${M(addMonths(r.s, 1))} or later, so ${odd.length === 1 ? 'it' : 'they'} may belong to the ${monthLabel(addMonths(r.s, 1))} statement (due in ${M(addMonths(r.s, 2))}). Tap one and change its Statement month.</div>
-        <div class="list">${odd.slice(0, 8).map(t => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div><div class="small muted">Bought ${dateLabel(t.txn_date)} · ${esc(cardCode(t.card_id))}</div></div><div class="right b">${peso(t.amount)}</div></div>`).join('')}</div></div>` : ''; })()}
+        <div class="list">${odd.slice(0, 8).map(t => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow">${dline(t, false)}<div class="small muted">Bought ${dateLabel(t.txn_date)} · ${esc(cardCode(t.card_id))}</div></div><div class="right b">${peso(t.amount)}</div></div>`).join('')}</div></div>` : ''; })()}
     <div class="sec">${M(r.m)} dues (${monthLabel(r.s)} statement) · in ${peso(r.inSum)} · out ${peso(r.outSum)}</div>
     <div class="card list">${startRow}
       ${r.rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
@@ -1785,7 +1790,7 @@ function openMoneyCat(kind, cats) {
   const items = moneyItems(p.from, p.to).filter(x => x.kind === kind && set.has(x.cat)).sort((a, b) => b.date.localeCompare(a.date));
   openSheet({ title: `${cats.includes('|') ? 'Others' : cats} · ${p.label}`, body: () => `
     <div class="card"><div class="small muted">Total</div><div class="big">${peso(sum(items, x => x.amount))}</div></div>
-    <div class="card list">${items.map(x => `<div class="item" data-action="${x.src === 'card' ? 'openTx' : 'openEntry'}" data-id="${x.id}"><div class="grow"><div class="b ell">${esc(x.desc)}</div>
+    <div class="card list">${items.map(x => `<div class="item" data-action="${x.src === 'card' ? 'openTx' : 'openEntry'}" data-id="${x.id}"><div class="grow">${dline({ description: x.desc, note: x.note })}
       <div class="small muted">${x.src === 'card' ? `Due ${dateLabel(x.date)} · ${esc(cardCode(x.card))} ${MON[+x.stmt.slice(5, 7) - 1]} statement` : dateLabel(x.date) + ' · Entry'}${set.size > 1 ? ' · ' + esc(x.cat) : ''}${x.person_id && !isMe(x.person_id) ? ' · ' + esc(personName(x.person_id)) : ''}</div></div><div class="right b">${peso(x.amount)}</div></div>`).join('') || '<div class="empty">Nothing here</div>'}</div>
     ${kind === 'expense' && items.some(x => x.src === 'card') ? '<p class="small muted">Card items are put in a category automatically. To change one, open it and set its Category to one of these names.</p>' : ''}` });
 }
@@ -2324,6 +2329,7 @@ async function loadData() {
     S._exp = S._money && await db.hasExpected().catch(() => false);
     S._dp = await db.hasCol('installment_shares', 'downpayment').catch(() => false);
     S._bills = await db.hasCol('cards', 'kind').catch(() => false);
+    S._txnote = await db.hasCol('transactions', 'note').catch(() => false);
     reindex();
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
     const made = await ensureInstallmentMonths();
