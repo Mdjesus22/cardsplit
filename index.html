@@ -196,7 +196,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.6';
+const VERSION = '2.7';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
@@ -1344,7 +1344,9 @@ function outlookEvents(today, rounds) {
   if (UI.oPromises) for (const c of S.charges) {
     if (isHousehold(c.person_id) || !live(c)) continue; const bal = balance(c); if (bal <= 0.004) continue;
     const t = IX.tx.get(c.transaction_id); let i, date, why;
-    if (c.promise_date) { date = c.promise_date < today ? today : c.promise_date; i = byDate(date); why = c.promise_date < today ? 'promised, late' : 'promised'; }
+    if (c.promise_date) { date = c.promise_date < today ? today : c.promise_date; i = byDate(date); why = c.promise_date < today ? 'promised, late' : 'promised';
+      const si = byStmt(t.month);   // a promise can move money to a LATER round, never into a round before its statement's
+      if (si < 0) i = -1; else if (i >= 0 && i < si) { i = si; why = 'to collect'; date = clamp(dueDate(t.card_id, t.month) || rounds[si].end, si); } }
     else { i = byStmt(t.month); const due = dueDate(t.card_id, t.month), late = t.month < rounds[0].s || !due || due < today;
       date = i < 0 ? '' : late ? today : clamp(due, i); why = late ? 'overdue' : 'to collect'; }
     if (i < 0) { notCounted = r2(notCounted + bal); continue; }
@@ -1352,7 +1354,7 @@ function outlookEvents(today, rounds) {
     o.amt = r2(o.amt + bal); o.n++; if (t.month < o.since) o.since = t.month; owe.set(k, o);
   }
   for (const [k, o] of owe) { const [pid, i, date, why] = k.split('|');
-    ev.push({ r: +i, date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? `To collect, ${monthLabel(o.since)} statement` : why === 'promised' ? 'Promised to pay you' : 'Promised, late'} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
+    ev.push({ r: +i, date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? `To collect, ${monthLabel(o.since)} statement` : why === 'promised' ? `Promised · ${monthLabel(o.since)} statement` : `Promised, late · ${monthLabel(o.since)} statement`} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
   ev.sort((a, b) => a.date.localeCompare(b.date) || (b.amt > 0) - (a.amt > 0));   // same day: money in first
   return { ev: ev.filter(x => x.r >= 0), notCounted };
 }
