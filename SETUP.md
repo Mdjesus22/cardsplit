@@ -14,6 +14,7 @@ You will make 2 free accounts:
 | `database/4-expected.sql` | Lets you add expected money (not received yet) | Supabase SQL Editor (run once, Part G) |
 | `database/5-safety-box.sql` | Safety box: your savings and loans paid back into it | Supabase SQL Editor (run once, Part H) |
 | `database/6-downpayment.sql` | Downpayment per person on an installment | Supabase SQL Editor (run once, Part I) |
+| `database/7-outside-bills.sql` | Outside bills you pay in cash for someone (e.g. St. Peter) | Supabase SQL Editor (run once, Part J) |
 | `index.html` | The app | GitHub (this repo) |
 | `.github/workflows/keep-alive.yml` | Daily ping so Supabase never pauses | GitHub (this repo) |
 
@@ -164,6 +165,16 @@ Expected money doesn't count in the Money **Summary** until you tap **Got it**. 
    - It pays **their last months first** (e.g. ₱5,000 at ₱1,723.74/month = months 17–18 + ₱1,552.52 of month 16). Their monthly payments are unchanged until then.
    - Until those months come, it shows on People under **Advances you're holding** (keep it in your wallet). It's applied by itself when each of those months is added.
 3. **Early months:** Cards → Installments shows "N installments start after month 1" when a plan began before your records. Tap **Add the early months** → **Add as paid** (if everyone already paid you) or **Add as unpaid**.
+
+## Part J — Outside bills / paluwal (v2.8)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/7-outside-bills.sql` and click **Run**. It only adds two columns. It's safe to run twice.
+2. ☰ → **Outside bills** → **＋ Add outside bill** (one per account, e.g. "St. Peter – Ella (account 1)"):
+   - **Amount every month**, **Due day**, **First due month to track** (e.g. this month), **Last due month**.
+   - **Who pays you back** (e.g. Ella), **Their share** (blank = all of it), **They usually pay you on day** (optional).
+3. Each month shows on Cards as an "Oct 2026 bill" item and on People as what they owe you. Record their payment the usual way (People → person → Record a payment).
+4. Cash outlook: you pay in cash on the **due date**; their money comes in on **their usual pay day**. Each lands in the right dues round. Bills don't change your card rounds (Oct dues still end on the last *card* due date).
+5. Only your own share (if any) counts in the Money summary.
 
 ---
 

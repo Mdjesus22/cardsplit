@@ -196,7 +196,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.7';
+const VERSION = '2.8';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
@@ -306,7 +306,7 @@ function reindex() {
   IX.cat = new Map((S.categories || []).map(r => [r.id, r]));
   IX.vaultByCharge = new Map((S.vault_loans || []).filter(l => l.charge_id).map(l => [l.charge_id, l]));
   IX.movesByLoan = groupBy(S.vault_moves || [], 'loan_id');
-  IX._dueS = undefined;
+  IX._dueS = undefined; IX._dueR = undefined;
 }
 const received = ch => sum(IX.collByCharge.get(ch.id) || [], c => c.amount);
 const inVault = ch => !!(IX.vaultByCharge && IX.vaultByCharge.get(ch.id));   // paid from the safety box
@@ -355,6 +355,8 @@ function chargeStatus(ch) {
 const STATUS_LABEL = { paid: 'Paid', partial: 'Partial', unpaid: 'Unpaid', mine: 'Mine', converted: 'Converted', vault: 'Safety box', later: 'Not due yet' };
 const cardLabel = id => { const c = IX.card.get(id); return c ? (c.bank || c.code) + (c.last4 ? ' ••' + c.last4 : '') : '?'; };
 const cardCode = id => IX.card.get(id)?.code ?? '?';
+const isBill = cid => IX.card?.get(cid)?.kind === 'bill';   // outside bill paid in cash (St. Peter etc.), not a credit card
+const stmtTag = t => isBill(t.card_id) ? `${monthLabel(addMonths(t.month, 1))} bill` : `${monthLabel(t.month)} statement`;
 function dueDate(cardId, month) {
   const s = IX.stmt.get(cardId + '|' + month);
   if (s?.due_date) return s.due_date;
@@ -440,7 +442,7 @@ async function ensureInstallmentMonths() {
   if (!todo.length) return 0;
   const txs = await ins('transactions', todo.map(({ p, no }) => ({
     card_id: p.card_id, month: addMonths(p.first_month, no - 1), txn_date: null, description: p.item,
-    category: 'LOAN', amount: r2(p.monthly_amount), installment_id: p.id, installment_no: no, source: 'auto' })));
+    category: isBill(p.card_id) ? null : 'LOAN', amount: r2(p.monthly_amount), installment_id: p.id, installment_no: no, source: 'auto' })));
   const rows = [];
   for (const t of txs) for (const c of splitFromShares(IX.inst.get(t.installment_id))) rows.push({ ...c, transaction_id: t.id });
   const made = await ins('charges', rows);
@@ -603,7 +605,7 @@ function txItem(t) {
   const inst = t.installment_id ? IX.inst.get(t.installment_id) : null;
   return `<div class="item" data-action="openTx" data-id="${t.id}">
     <div class="grow"><div class="b ell">${esc(t.description)}</div>
-      <div class="small muted">${monthLabel(t.month)} statement${t.txn_date ? ' · bought ' + dateLabel(t.txn_date) : ''} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
+      <div class="small muted">${stmtTag(t)}${t.txn_date ? ' · bought ' + dateLabel(t.txn_date) : ''} · ${esc(cardCode(t.card_id))}${inst ? ` · <span class="chip brand">${t.installment_no}/${inst.months}</span>` : ''}${t.category ? ' · ' + esc(t.category) : ''}</div>
       <div class="chips">${cs.map(c => { const st = chargeStatus(c); return `<span class="chip ${st}">${esc(personName(c.person_id))}${st === 'mine' || st === 'converted' ? '' : st === 'vault' ? ' ' + peso(c.amount) + ' · safety box' : ' ' + peso(st === 'paid' ? c.amount : balance(c)) + (st === 'paid' ? ' ✓' : '')}</span>`; }).join('')}</div></div>
     <div class="right b">${peso(t.amount)}</div></div>`;
 }
@@ -839,7 +841,7 @@ function openStmt(cardId) {
 /* ---------------- INSTALLMENTS ---------------- */
 function viewInst() {
   const asOf = UI.month;
-  const all = S.installments.map(p => ({ p, i: planInfo(p, asOf) }));
+  const all = S.installments.filter(p => !isBill(p.card_id)).map(p => ({ p, i: planInfo(p, asOf) }));
   const counts = { active: 0, done: 0, ended: 0 };
   all.forEach(x => { if (x.i.status === 'active' || x.i.status === 'notyet') counts.active++; else counts[x.i.status]++; });
   const f = UI.instFilter;
@@ -859,6 +861,74 @@ function viewInst() {
       <button class="btn sm" style="margin-top:8px" data-action="openFillEarly">Add the early months</button></div>` : ''; })()}
     ${list.map(({ p, i }) => planCard(p, i)).join('') || '<div class="card empty">No installments here.</div>'}
     <button class="btn pri block" style="margin-top:12px" data-action="newPlan">+ New installment</button>`;
+}
+/* ---------------- OUTSIDE BILLS (paluwal): paid in cash for someone, e.g. St. Peter ---------------- */
+// Stored like a card ("kind = bill") with one monthly plan, so People, Cards and the Cash outlook all work the same way.
+function collectAfter(due, day) {   // their pay-back day on or after the due date
+  const at = m => { const [y, mo] = m.split('-').map(Number); return `${m.slice(0, 8)}${pad(Math.min(day, new Date(y, mo, 0).getDate()))}`; };
+  const iso = at(monthOf(due)); return iso >= due ? iso : at(addMonths(monthOf(due), 1));
+}
+async function applyCollectDays() {   // fill the promise date on each unpaid month (only where none is set)
+  if (!S._bills) return;
+  for (const p of S.installments) { if (!p.collect_day) continue;
+    for (const t of [...(IX.txByInst.get(p.id) || [])]) { const due = dueDate(t.card_id, t.month); if (!due) continue;
+      for (const c of [...(IX.chargesByTx.get(t.id) || [])]) { if (isMe(c.person_id) || c.promise_date || balance(c) <= 0.004) continue;
+        await upd('charges', c.id, { promise_date: collectAfter(due, p.collect_day) }); } } }
+}
+const billPlans = () => S.cards.filter(c => c.kind === 'bill').map(c => ({ c, p: S.installments.find(x => x.card_id === c.id) }));
+function openBills() {
+  openSheet({ title: 'Outside bills', body: () => `
+    <p class="small muted">Bills you pay in cash for someone (paluwal), like St. Peter. You pay on the due date and they pay you back. Each month shows on Cards as an "Oct 2026 bill" item and on People as what they owe you.</p>
+    ${S._bills ? '' : '<div class="card small"><b>One more setup step:</b> run <b>database/7-outside-bills.sql</b> in Supabase → SQL Editor → New query → Run, then tap ☰ → Refresh data.</div>'}
+    <div class="card list">${billPlans().map(({ c, p }) => { const sh = p ? (IX.sharesByInst.get(p.id) || []).filter(s => !isMe(s.person_id)) : [];
+      return `<div class="item" data-action="openBill" data-id="${c.id}"><div class="grow"><div class="b ell">${esc(c.bank || c.code)}</div>
+        <div class="small muted">due every ${c.due_day ? ordinal(c.due_day) : '—'}${p ? ` · ${monthLabel(addMonths(p.first_month, 1))} – ${monthLabel(addMonths(p.first_month, p.months))}` : ''}${sh.length ? ' · ' + sh.map(s => esc(personName(s.person_id))).join(', ') + ' pays you back' + (p.collect_day ? ` on the ${ordinal(p.collect_day)}` : '') : ''}</div></div>
+        <div class="right b">${p ? peso(p.monthly_amount) + '/mo' : ''}</div></div>`; }).join('') || '<div class="empty">No outside bills yet.</div>'}</div>
+    ${S._bills ? '<button class="btn pri block" style="margin-top:10px" data-action="openBill">＋ Add outside bill</button>' : ''}` });
+}
+function openBill(cardId) {
+  const c = cardId ? IX.card.get(cardId) : null, p = c ? S.installments.find(x => x.card_id === c.id) : null, sh = p ? (IX.sharesByInst.get(p.id) || []).find(s => !isMe(s.person_id)) : null;
+  const nm = monthOf(todayISO()).slice(0, 7), someone = (S.people.find(x => x.active && x.kind !== 'me') || {}).id;
+  const d = { name: c ? (c.bank || c.code) : '', amount: p ? String(p.monthly_amount) : '', due_day: c?.due_day ? String(c.due_day) : '',
+    first: p ? addMonths(p.first_month, 1).slice(0, 7) : nm, last: p ? addMonths(p.first_month, p.months).slice(0, 7) : '',
+    person_id: sh?.person_id || someone, share: sh ? String(sh.monthly_share) : '', collect_day: p?.collect_day ? String(p.collect_day) : '', note: p?.notes || '' };
+  openSheet({ title: c ? 'Outside bill' : 'New outside bill', draft: d, mount: o => bindDraft(o, d),
+    body: () => `
+      <label class="f"><span>Name</span><input class="in" data-k="name" value="${esc(d.name)}" placeholder="e.g. St. Peter – Ella (account 1)"></label>
+      <div class="grid2">
+        <label class="f"><span>Amount every month (₱)</span><input class="in" type="number" step="0.01" inputmode="decimal" data-k="amount" value="${esc(d.amount)}"></label>
+        <label class="f"><span>Due day (1–31)</span><input class="in" type="number" min="1" max="31" inputmode="numeric" data-k="due_day" value="${esc(d.due_day)}"></label>
+        <label class="f"><span>First due month to track</span><input class="in" type="month" data-k="first" value="${esc(d.first)}"></label>
+        <label class="f"><span>Last due month</span><input class="in" type="month" data-k="last" value="${esc(d.last)}"></label>
+        <label class="f"><span>Who pays you back</span><select class="in" data-k="person_id" data-num>${S.people.filter(x => (x.active && x.kind !== 'me') || x.id === d.person_id).map(x => `<option value="${x.id}" ${x.id === d.person_id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}<option value="__new">＋ New person…</option></select></label>
+        <label class="f"><span>Their share each month (₱)</span><input class="in" type="number" step="0.01" inputmode="decimal" data-k="share" value="${esc(d.share)}" placeholder="blank = all of it"></label>
+        <label class="f"><span>They usually pay you on day</span><input class="in" type="number" min="1" max="31" inputmode="numeric" data-k="collect_day" value="${esc(d.collect_day)}" placeholder="optional"></label>
+      </div>
+      <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
+      <p class="small muted"><b>First due month to track</b>: the first month you want in the app (e.g. this month), not when the plan started. Months before it aren't added.
+      You pay in cash on the due date. If they pay you later, set the day they usually pay, so the Cash outlook counts their money on that day.</p>`,
+    foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveBill" ${c ? `data-id="${c.id}"` : ''}>Save</button></div>` });
+}
+async function saveBill(cardId) {
+  const d = SHEETS[SHEETS.length - 1].draft, amt = r2(num(d.amount)), dd = parseInt(d.due_day, 10), first = d.first ? d.first + '-01' : '', last = d.last ? d.last + '-01' : '';
+  if (!S._bills) return toast('Run database/7-outside-bills.sql in Supabase first');
+  if (!(d.name || '').trim()) return toast('Add a name'); if (!(amt > 0)) return toast('Add the amount'); if (!(dd >= 1 && dd <= 31)) return toast('Add the due day (1–31)');
+  if (!first || !last) return toast('Add the first and last due month'); if (last < first) return toast('The last due month is before the first');
+  if (!d.person_id) return toast('Pick who pays you back');
+  const share = d.share === '' || d.share == null ? amt : r2(num(d.share)); if (!(share >= 0) || share > amt + 0.004) return toast('Their share must be between ₱0 and the amount');
+  const cd = d.collect_day === '' || d.collect_day == null ? null : parseInt(d.collect_day, 10); if (cd != null && !(cd >= 1 && cd <= 31)) return toast('Pay-back day must be 1–31');
+  const prow = { item: d.name.trim(), monthly_amount: amt, months: monthDiff(last, first) + 1, first_month: addMonths(first, -1), status: 'active', collect_day: cd, notes: (d.note || '').trim() || null };
+  try {
+    let card = cardId ? IX.card.get(cardId) : null, plan = card ? S.installments.find(x => x.card_id === card.id) : null;
+    if (card) await upd('cards', card.id, { bank: prow.item, due_day: dd });
+    else { let n = S.cards.filter(c => c.kind === 'bill').length + 1, code = 'BILL' + n; while (S.cards.some(c => c.code === code)) code = 'BILL' + (++n); [card] = await ins('cards', [{ code, bank: prow.item, due_day: dd, active: true, kind: 'bill' }]); }
+    if (plan) await upd('installments', plan.id, prow); else [plan] = await ins('installments', [{ ...prow, card_id: card.id }]);
+    const o = (IX.sharesByInst.get(plan.id) || []).find(s => !isMe(s.person_id));
+    if (o) { if (o.person_id !== d.person_id || Number(o.monthly_share) !== share) await upd('installment_shares', o.id, { person_id: d.person_id, monthly_share: share }); }
+    else if (share > 0) await ins('installment_shares', [{ installment_id: plan.id, person_id: d.person_id, monthly_share: share }]);
+    const made = await ensureInstallmentMonths(); await syncDownpayments(); await applyCollectDays();
+    closeSheet(); redrawTop(); render(); toast(made ? `Saved · ${made} month${made === 1 ? '' : 's'} added` : 'Saved');
+  } catch (e) { toast('Could not save: ' + (e.message || e)); }
 }
 function missingEarly(p) {   // months 1..(first month in the app - 1)
   const nos = (IX.txByInst.get(p.id) || []).map(t => t.installment_no); if (!nos.length) return [];
@@ -995,8 +1065,11 @@ async function savePlan() {
 
 /* ---------------- PEOPLE ---------------- */
 // The statement being paid now (e.g. the Sep statement until the last Oct due date). Later statements are "not due yet".
-const dueStmt = () => IX._dueS || (IX._dueS = dueRounds(todayISO())[0].s);
-const notDueYet = c => (IX.tx.get(c.transaction_id)?.month || '') > dueStmt() && balance(c) > 0.004;
+const dueR0 = () => IX._dueR || (IX._dueR = dueRounds(todayISO())[0]);
+const dueStmt = () => dueR0().s;
+const notDueYet = c => { const t = IX.tx.get(c.transaction_id); if (!t || balance(c) <= 0.004) return false;
+  if (isBill(t.card_id)) { const d = dueDate(t.card_id, t.month); return !!d && d > dueR0().end; }   // outside bills: by their due date
+  return t.month > dueStmt(); };
 function personStats(pid) {
   const cs = (IX.chargesByPerson.get(pid) || []).filter(live), later = cs.filter(notDueYet), now = cs.filter(c => !notDueYet(c));
   const open = now.filter(c => balance(c) > 0.004);
@@ -1096,12 +1169,12 @@ function personBody(p, d) {
       <button class="btn pri block" style="margin-top:10px" data-action="personPay" data-id="${p.id}">Save payment</button></div>` : ''}
     <div class="sec">Unpaid items (${items.length})</div>
     <div class="card list">${items.map(({ c, t }) => { const st = chargeStatus(c); return `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="b ell">${esc(t.description)}</div>
-      <div class="small muted">${monthLabel(t.month)} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}${c.promise_date ? ` · promised ${dateLabel(c.promise_date)}` : ''}</div></div>
+      <div class="small muted">${stmtTag(t)} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}${c.promise_date ? ` · promised ${dateLabel(c.promise_date)}` : ''}</div></div>
       <div class="right"><div class="b">${peso(balance(c))}</div><span class="chip ${st}">${STATUS_LABEL[st]}</span></div></div>`; }).join('') || '<div class="empty">Nothing unpaid 🎉</div>'}</div>
     ${later.length ? `<div class="sec">Not due yet (${later.length}) · ${peso(sum(later, x => balance(x.c)))}</div>
     <div class="small muted" style="margin:0 2px 6px">On statements after ${monthLabel(dueStmt())}. They move up to Unpaid items once their statement is the one being paid.</div>
     <div class="card list">${later.map(({ c, t }) => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow"><div class="ell">${esc(t.description)}</div>
-      <div class="small muted">${monthLabel(t.month)} statement${(d => d ? ' · due ' + dateLabel(d) : '')(dueDate(t.card_id, t.month))} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}</div></div>
+      <div class="small muted">${stmtTag(t)}${(d => d ? ' · due ' + dateLabel(d) : '')(dueDate(t.card_id, t.month))} · ${esc(cardCode(t.card_id))}${t.installment_no ? ` · ${t.installment_no}/${IX.inst.get(t.installment_id)?.months}` : ''}</div></div>
       <div class="right b">${peso(balance(c))}</div></div>`).join('')}</div>` : ''}
     ${(() => { const cr = creditCharges(p.id); if (!cr.length) return '';
       return `<div class="sec">Credits (${cr.length}) · ${peso(-sum(cr, x => balance(x.c)))}</div>
@@ -1121,7 +1194,7 @@ function personBody(p, d) {
 
 /* ---------------- cards (menu) ---------------- */
 function openCards() {
-  openSheet({ title: 'Cards', body: () => `<div class="card list">${S.cards.map(c => `<div class="item" data-action="openCard" data-id="${c.id}">${cardGlyph(c.id)}<div class="grow"><div class="b">${esc(c.code)} ${c.active ? '' : '<span class="pill">not used</span>'}</div><div class="small muted">${esc(c.bank || '')}${c.last4 ? ' ••' + c.last4 : ''} · due day ${c.due_day ?? '—'}</div></div><div class="muted">›</div></div>`).join('') || '<div class="empty">No cards yet</div>'}</div>
+  openSheet({ title: 'Cards', body: () => `<div class="card list">${S.cards.map(c => `<div class="item" data-action="openCard" data-id="${c.id}">${cardGlyph(c.id)}<div class="grow"><div class="b">${esc(c.code)} ${c.active ? '' : '<span class="pill">not used</span>'}</div><div class="small muted">${esc(c.bank || '')}${c.last4 ? ' ••' + c.last4 : ''} · due day ${c.due_day ?? '—'}${c.kind === 'bill' ? ' · <span class="pill">outside bill</span>' : ''}</div></div><div class="muted">›</div></div>`).join('') || '<div class="empty">No cards yet</div>'}</div>
     <button class="btn pri block" data-action="openCard">+ Add card</button>` });
 }
 function openCard(id) {
@@ -1323,21 +1396,32 @@ function outlookEvents(today, rounds) {
     ev.push({ r: byDate(m.move_date), date: m.move_date, amt: inn ? Number(m.amount) : -Number(m.amount), label: L ? `From safety box · ${personName(L.person_id)}` : inn ? 'From safety box' : 'Into safety box',
       sub: L ? `${L.item} · pays that part of the card bill` : (m.note || 'Safety box'), action: `data-action="goVault"` });
   }
-  rounds.forEach((rd, i) => { for (const c of S.cards) {   // card bills of this round's statement: full amount you pay the bank
-    const m = rd.s, due = dueDate(c.id, m); if (due && due < today) continue;   // due date passed: treated as paid
-    if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
-    const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
-    const date = clamp(due || rd.end, i);
-    ev.push({ r: i, date, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
-    if (UI.oPromises) for (const p of bill.proj) for (const s of splitFromShares(p)) {   // riders' share of installment months not created yet (after any advance)
+  const addProj = (bill, m, i, date) => { if (UI.oPromises) for (const p of bill.proj) for (const s of splitFromShares(p)) {   // riders' share of months not created yet (after downpayment/advance)
       if (isHousehold(s.person_id) || !(s.amount > 0)) continue;
       const shr = (IX.sharesByInst.get(p.id) || []).find(x => x.person_id === s.person_id), dc = S._dp && shr ? (dpCover(p, shr)[monthDiff(m, p.first_month) + 1] || 0) : 0;
       const need = r2(s.amount - dc); if (need <= 0.004) continue;
       const adv = advLeft.has(s.person_id) ? advLeft.get(s.person_id) : personAdvance(s.person_id), use = Math.min(adv, need); advLeft.set(s.person_id, r2(adv - use));
       const amt = r2(need - use); if (amt <= 0.004) continue;
-      const k = `${s.person_id}|${i}|${date}|to collect`, o = owe.get(k) || { amt: 0, n: 0, since: m }; o.amt = r2(o.amt + amt); o.n++; owe.set(k, o);
-    }
+      const cd = p.collect_day ? collectAfter(date, p.collect_day) : null, ii = cd ? byDate(cd) : i; if (ii < 0) continue;
+      const k = `${s.person_id}|${ii}|${cd || date}|${cd ? 'promised' : 'to collect'}`, o = owe.get(k) || { amt: 0, n: 0, since: m, tag: stmtTag({ card_id: p.card_id, month: m }) }; o.amt = r2(o.amt + amt); o.n++; owe.set(k, o);
+    } };
+  rounds.forEach((rd, i) => { for (const c of S.cards) {   // card bills of this round's statement: full amount you pay the bank
+    if (c.kind === 'bill') continue;
+    const m = rd.s, due = dueDate(c.id, m); if (due && due < today) continue;   // due date passed: treated as paid
+    if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
+    const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
+    const date = clamp(due || rd.end, i);
+    ev.push({ r: i, date, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+    addProj(bill, m, i, date);
   } });
+  for (const c of S.cards) { if (c.kind !== 'bill') continue;   // outside bills (paid in cash): in the round of their due date
+    for (let m = addMonths(monthOf(today), -2); m <= monthOf(end); m = addMonths(m, 1)) {
+      const due = dueDate(c.id, m); if (!due || due < today || due > end) continue;
+      if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
+      const bill = billEstimate(c.id, m), i = byDate(due); if (bill.amt <= 0.004 || i < 0) continue;
+      ev.push({ r: i, date: due, amt: -bill.amt, label: c.bank || c.code, sub: `Outside bill (cash) · ${monthLabel(addMonths(m, 1))}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+      addProj(bill, m, i, due);
+    } }
   // Riders: everything they still owe counts. With a promise date: on that date. Without: in the round of its statement, by the bill's due date.
   // Older statements (overdue) count today. Household (you + partner) is left out: that money is already yours.
   let notCounted = 0;
@@ -1345,16 +1429,17 @@ function outlookEvents(today, rounds) {
     if (isHousehold(c.person_id) || !live(c)) continue; const bal = balance(c); if (bal <= 0.004) continue;
     const t = IX.tx.get(c.transaction_id); let i, date, why;
     if (c.promise_date) { date = c.promise_date < today ? today : c.promise_date; i = byDate(date); why = c.promise_date < today ? 'promised, late' : 'promised';
-      const si = byStmt(t.month);   // a promise can move money to a LATER round, never into a round before its statement's
+      const si = isBill(t.card_id) ? byDate((d => d && d > today ? d : today)(dueDate(t.card_id, t.month))) : byStmt(t.month);   // a promise can move money to a LATER round, never earlier than its statement's
       if (si < 0) i = -1; else if (i >= 0 && i < si) { i = si; why = 'to collect'; date = clamp(dueDate(t.card_id, t.month) || rounds[si].end, si); } }
+    else if (isBill(t.card_id)) { const due = dueDate(t.card_id, t.month), late = !due || due < today; date = late ? today : due; i = byDate(date); why = late ? 'overdue' : 'to collect'; }
     else { i = byStmt(t.month); const due = dueDate(t.card_id, t.month), late = t.month < rounds[0].s || !due || due < today;
       date = i < 0 ? '' : late ? today : clamp(due, i); why = late ? 'overdue' : 'to collect'; }
     if (i < 0) { notCounted = r2(notCounted + bal); continue; }
-    const k = `${c.person_id}|${i}|${date}|${why}`, o = owe.get(k) || { amt: 0, n: 0, since: t.month };
-    o.amt = r2(o.amt + bal); o.n++; if (t.month < o.since) o.since = t.month; owe.set(k, o);
+    const k = `${c.person_id}|${i}|${date}|${why}`, o = owe.get(k) || { amt: 0, n: 0, since: t.month, tag: stmtTag(t) };
+    o.amt = r2(o.amt + bal); o.n++; if (t.month < o.since) { o.since = t.month; o.tag = stmtTag(t); } owe.set(k, o);
   }
   for (const [k, o] of owe) { const [pid, i, date, why] = k.split('|');
-    ev.push({ r: +i, date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? `To collect, ${monthLabel(o.since)} statement` : why === 'promised' ? `Promised · ${monthLabel(o.since)} statement` : `Promised, late · ${monthLabel(o.since)} statement`} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
+    ev.push({ r: +i, date, amt: o.amt, label: personName(+pid), sub: `${why === 'overdue' ? `Overdue since ${monthLabel(o.since)}` : why === 'to collect' ? `To collect, ${o.tag || monthLabel(o.since) + ' statement'}` : why === 'promised' ? `Promised · ${o.tag || monthLabel(o.since) + ' statement'}` : `Promised, late · ${o.tag || monthLabel(o.since) + ' statement'}`} · ${o.n} item${o.n === 1 ? '' : 's'}`, action: `data-action="openPerson" data-id="${pid}"` }); }
   ev.sort((a, b) => a.date.localeCompare(b.date) || (b.amt > 0) - (a.amt > 0));   // same day: money in first
   return { ev: ev.filter(x => x.r >= 0), notCounted };
 }
@@ -1364,7 +1449,7 @@ function dueRounds(today) {
   const out = [];
   for (let k = 0; out.length < 3 && k < 8; k++) {
     const D = addMonths(monthOf(today), k), s = addMonths(D, -1);
-    const ds = S.cards.filter(c => c.active || billEstimate(c.id, s).amt > 0.004).map(c => dueDate(c.id, s)).filter(d => d && monthOf(d) === D).sort();
+    const ds = S.cards.filter(c => c.kind !== 'bill' && (c.active || billEstimate(c.id, s).amt > 0.004)).map(c => dueDate(c.id, s)).filter(d => d && monthOf(d) === D).sort();
     if (!ds.length) continue; const end = ds[ds.length - 1];
     if (end < today || (out.length && end <= out[out.length - 1].end)) continue;
     out.push({ m: D, s, end });
@@ -2087,6 +2172,8 @@ const A = {
   splitEq: () => { const d = SHEETS[SHEETS.length - 1].draft; const amt = r2(num(d.amount)); const n = d.charges.length; if (!amt || !n) return toast('Add the amount and people first');
     const each = Math.floor(amt / n * 100) / 100; d.charges.forEach((c, i) => c.amount = String(i === 0 ? r2(amt - each * (n - 1)) : each)); redrawTop(); },
   saveTx: () => saveTx(),
+  openBill: el => openBill(el.dataset.id ? +el.dataset.id : null),
+  saveBill: el => saveBill(el.dataset.id ? +el.dataset.id : null),
   openFillEarly: () => openFillEarly(),
   fillEarly: async el => { const paid = el.dataset.paid === '1';
     try { const n = await fillEarly(paid); closeSheet(); render(); toast(`Added ${n} early month${n === 1 ? '' : 's'}${paid ? ', marked paid' : ''}`); } catch (e) { toast('Could not add: ' + (e.message || e)); } },
@@ -2156,10 +2243,10 @@ const A = {
   menu: () => {
     const el = document.createElement('div'); el.className = 'drawer';
     el.innerHTML = `<div class="pane"><div class="b row" style="padding:6px 10px 12px;gap:8px">${LOGO}CardSplit <span class="small muted">v${VERSION}</span></div>
-      <button data-m="upload">${icon('doc')}Upload statement PDF</button><button data-m="cards">${icon('card')}Cards &amp; due days</button>${S._money ? `<button data-m="cats">${icon('tag')}Categories</button><button data-m="vault">${icon('wallet')}Safety box</button>` : ''}<button data-m="export">${icon('download')}Export backup (Excel)</button>
+      <button data-m="upload">${icon('doc')}Upload statement PDF</button><button data-m="cards">${icon('card')}Cards &amp; due days</button>${S._money ? `<button data-m="cats">${icon('tag')}Categories</button><button data-m="vault">${icon('wallet')}Safety box</button><button data-m="bills">${icon('doc')}Outside bills</button>` : ''}<button data-m="export">${icon('download')}Export backup (Excel)</button>
       <button data-m="reload">${icon('refresh')}Refresh data</button>${DEMO ? '' : `<button data-m="logout">${icon('logout')}Log out</button>`}</div>`;
     el.addEventListener('click', async e => { const m = e.target.closest('[data-m]')?.dataset.m; el.remove();
-      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'cats') openCategories(); if (m === 'vault') { UI.view = 'money'; UI.mTab = 'vault'; render(); scrollTo(0, 0); } if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
+      if (m === 'upload') openUpload(); if (m === 'cards') openCards(); if (m === 'cats') openCategories(); if (m === 'vault') { UI.view = 'money'; UI.mTab = 'vault'; render(); scrollTo(0, 0); } if (m === 'bills') openBills(); if (m === 'export') exportBackup(); if (m === 'reload') await loadData(); if (m === 'logout') { await sb.auth.signOut(); location.reload(); } });
     document.body.appendChild(el);
   },
 };
@@ -2236,10 +2323,11 @@ async function loadData() {
     S._vault = VAULT_TABLES.every(t => Array.isArray(S[t])); for (const t of VAULT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
     S._exp = S._money && await db.hasExpected().catch(() => false);
     S._dp = await db.hasCol('installment_shares', 'downpayment').catch(() => false);
+    S._bills = await db.hasCol('cards', 'kind').catch(() => false);
     reindex();
     if (!IX.me) { await ins('people', [{ name: 'Me', kind: 'me' }]); }
     const made = await ensureInstallmentMonths();
-    await syncDownpayments();
+    await syncDownpayments(); await applyCollectDays();
     await ensureMoneyDefaults(); await ensureRecurring();
     render(); if (made) toast(`${made} installment month${made === 1 ? '' : 's'} added${UI._advMsg || ''}`); UI._advMsg = '';
   } catch (e) {
