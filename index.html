@@ -199,7 +199,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '2.9';
+const VERSION = '3.1';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
@@ -1836,7 +1836,7 @@ function pageLines(items, maxX = Infinity) {
       const gap = end == null ? 0 : it.x - end;
       if (!cur || gap > 12) { cur = { x: it.x, text: it.s.trim() }; cells.push(cur); }
       else cur.text += (gap > 1 ? ' ' : '') + it.s.trim();
-      end = it.x + it.w;
+      end = it.x + it.w; cur.e = end;
     }
     return { y: l.y, cells, text: cells.map(c => c.text).join('   ') };
   });
@@ -1847,6 +1847,8 @@ function parseDateAny(s) {
   if (m) return `${m[3]}-${pad(MON_RE.split('|').indexOf(m[1].toUpperCase().slice(0, 3)) + 1)}-${pad(m[2])}`;
   m = /\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/.exec(s);
   if (m) { const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return `${y}-${pad(m[1])}-${pad(m[2])}`; }
+  m = new RegExp(`\\b(\\d{1,2})[-\\s]+(${MON_RE})[A-Z]*\\.?[-\\s,]+(\\d{2}|\\d{4})\\b`, 'i').exec(s);
+  if (m) { const y = m[3].length === 2 ? 2000 + +m[3] : +m[3]; return `${y}-${pad(MON_RE.split('|').indexOf(m[2].toUpperCase().slice(0, 3)) + 1)}-${pad(m[1])}`; }
   return null;
 }
 const parseMoney = s => { const m = /(?:P|PHP|₱)?\s*([\d,]+\.\d{2})/.exec(s || ''); return m ? Number(m[1].replace(/,/g, '')) : null; };
@@ -1857,7 +1859,7 @@ function findLabeled(lines, labelRe, parse) {
       const m = labelRe.exec(cell.text); if (!m) continue;
       const after = parse(cell.text.slice(m.index + m[0].length)); if (after != null) return after;
       const right = lines[i].cells.find(c => c.x > cell.x && c.x - cell.x < 260 && parse(c.text) != null && !labelRe.test(c.text));
-      if (right && right.x - cell.x < 200) return parse(right.text);
+      if (right && (right.x - cell.x < 200 || right.e - cell.x < 280)) return parse(right.text);
       for (let j = i + 1; j < Math.min(lines.length, i + 4); j++) {
         if (lines[i].y - lines[j].y > 45) break;
         const below = lines[j].cells.filter(c => Math.abs(c.x - cell.x) < 70 && parse(c.text) != null).sort((a, b) => Math.abs(a.x - cell.x) - Math.abs(b.x - cell.x))[0];
@@ -1868,31 +1870,38 @@ function findLabeled(lines, labelRe, parse) {
   return null;
 }
 const TX_RE = /^(\d{1,2}\/\d{1,2}\/\d{2,4})\s+(?:(\d{1,2}\/\d{1,2}\/\d{2,4})\s+)?(.+?)\s+(\(?-?[\d,]+\.\d{2}\)?)\s*(-|CR)?$/i;
+const TX2_RE = new RegExp(`^(${MON_RE})[A-Z]*\\.?\\s+(\\d{1,2})\\s+(?:(${MON_RE})[A-Z]*\\.?\\s+(\\d{1,2})\\s+)?(?!\\d{4}\\b)(.+?)\\s+(\\(?-?[\\d,]+\\.\\d{2}\\)?)\\s*(-|CR)?$`, 'i');
+// "SEP 07" has no year: take the year that puts it before the due date (a DEC line on a JAN bill = last year)
+function mdISO(mon, day, ref) {
+  const mi = MON_RE.split('|').indexOf(mon.toUpperCase().slice(0, 3)) + 1, y = +ref.slice(0, 4) - (mi > +ref.slice(5, 7) ? 1 : 0);
+  return `${y}-${pad(mi)}-${pad(day)}`;
+}
 const CARDNO_RE = /(?:\d{4}|[X*]{4})[- ]?(?:\d{4}|[X*]{4})[- ]?(?:\d{4}|[X*]{4})[- ]?(\d{4})\b/;
 function parseStatement(pages) {
   const all = pages.map(p => pageLines(p));
   const flat = all.flat();
   const full = flat.map(l => l.text).join('\n');
   const info = {
-    bank: /RCBC/i.test(full) ? 'RCBC' : /UNIONBANK|UNION BANK/i.test(full) ? 'UnionBank' : '',
+    bank: /RCBC/i.test(full) ? 'RCBC' : /UNIONBANK|UNION BANK/i.test(full) ? 'UnionBank' : /EAST\s?WEST/i.test(full) ? 'EastWest' : '',
     due: findLabeled(flat, /PAYMENT\s+DUE\s+DATE|DUE\s+DATE/i, parseDateAny),
     total: findLabeled(flat, /TOTAL\s+(?:BALANCE|AMOUNT)\s+DUE|NEW\s+BALANCE|TOTAL\s+STATEMENT\s+BALANCE/i, parseMoney),
     min: findLabeled(flat, /MIN(?:IMUM)?\.?\s+(?:AMOUNT|PAYMENT)\s+DUE/i, parseMoney),
     last4: (CARDNO_RE.exec(full) || [])[1] || null,
   };
-  const lines = []; let last4 = info.last4;
+  const lines = []; let last4 = info.last4; const ref = info.due || todayISO();
   pages.forEach(items => {
     // Skip the right-hand "IMPORTANT REMINDERS" column so it doesn't mix into transaction rows.
     const header = pageLines(items).flatMap(l => l.cells).find(c => /IMPORTANT\s+REMINDERS/i.test(c.text));
     for (const l of pageLines(items, header ? header.x - 4 : Infinity)) {
-      const t = l.text.trim(); const m = TX_RE.exec(t);
-      if (!m) { const c = CARDNO_RE.exec(t); if (c) last4 = c[1]; continue; }
-      let desc = m[3].replace(/\s{2,}/g, ' ').trim(), k = null, n = null;
-      const im = /(?:^|\s|(?<=[A-Z]))(\d{1,2})\s*\/\s*(\d{1,2})$/.exec(desc);
+      const t = l.text.trim(); const m = TX_RE.exec(t), e = m ? null : TX2_RE.exec(t);
+      if (!m && !e) { const c = CARDNO_RE.exec(t); if (c) last4 = c[1]; continue; }
+      let desc = (m ? m[3] : e[5]).replace(/\s{2,}/g, ' ').trim(), k = null, n = null;
+      const im = /(?:^|\s|(?<=[A-Z]))(\d{1,2})\s*\/\s*(\d{1,2})$/.exec(desc) || /\s(\d{1,3})\s+OF\s+(\d{1,3})$/i.exec(desc);   // 3/12 or 003 OF 012
       if (im && +im[1] >= 1 && +im[1] <= +im[2] && +im[2] <= 60) { k = +im[1]; n = +im[2]; desc = desc.slice(0, im.index).trim(); }
-      const neg = /^\(|^-/.test(m[4]) || !!m[5];
-      const amount = r2((neg ? -1 : 1) * Number(m[4].replace(/[(),\-]/g, '')));
-      lines.push({ date: parseDateAny(m[1]), post: m[2] ? parseDateAny(m[2]) : null, desc, k, n, amount, last4 });
+      const a = m ? m[4] : e[6], neg = /^\(|^-/.test(a) || !!(m ? m[5] : e[7]);
+      const amount = r2((neg ? -1 : 1) * Number(a.replace(/[(),\-]/g, '')));
+      const date = m ? parseDateAny(m[1]) : mdISO(e[1], e[2], ref), post = m ? (m[2] ? parseDateAny(m[2]) : null) : (e[3] ? mdISO(e[3], e[4], ref) : null);
+      lines.push({ date, post, desc, k, n, amount, last4 });
     }
   });
   return { info, lines, rawText: full };
@@ -2012,7 +2021,8 @@ async function readUpload() {
   if (!st.lines.length) { d.err = 'No transactions found. Is this a scanned/photo PDF? Tap the button below and send me the text so I can add this bank.'; return redrawTop(); }
   st.multiCard = new Set(st.lines.map(x => x.last4).filter(Boolean)).size > 1;
   const byLast4 = st.info.last4 && S.cards.find(c => c.last4 === st.info.last4);
-  const byBank = st.info.bank && S.cards.find(c => c.active && (c.code + ' ' + (c.bank || '')).toUpperCase().includes(st.info.bank.toUpperCase()));
+  const bankHit = c => (c.code + ' ' + (c.bank || '')).toUpperCase().replace(/\s/g, '').includes(st.info.bank.toUpperCase());
+  const byBank = st.info.bank && (S.cards.find(c => c.active && bankHit(c)) || S.cards.find(bankHit));
   st.card_id = (byLast4 || byBank || S.cards.find(c => c.active) || S.cards[0])?.id;
   const posts = st.lines.map(x => x.post || x.date).filter(Boolean).sort();
   st.month = st.info.due ? addMonths(monthOf(st.info.due), -1) : monthOf(posts[posts.length - 1] || todayISO());
@@ -2031,6 +2041,8 @@ async function doImport() {
     const s = IX.stmt.get(st.card_id + '|' + m);
     const srow = { due_date: st.info.due || null, total_due: st.info.total ?? null, min_due: st.info.min ?? null };
     if (s) await upd('statements', s.id, srow); else await ins('statements', [{ ...srow, card_id: st.card_id, month: m }]);
+    const card = IX.card.get(st.card_id);
+    if (card && !card.last4 && st.info.last4 && !st.multiCard && !S.cards.some(c => c.last4 === st.info.last4)) await upd('cards', card.id, { last4: st.info.last4 });
     // 2) new installment plans
     for (const x of pick.filter(x => x.kind === 'newplan' && x.makePlan)) {
       const [p] = await ins('installments', [{ card_id: x.cardId, item: x.desc, monthly_amount: x.amount, months: x.n, first_month: addMonths(m, -(x.k - 1)), status: 'active', notes: 'Created from PDF upload' }]);
