@@ -183,6 +183,17 @@ Expected money doesn't count in the Money **Summary** until you tap **Got it**. 
 3. The note shows in small grey text beside the name, e.g. **SHOPEE PH MANDALUYONG** diapers, soap. It shows on Cards, People and Money → category list.
 4. The Cards search also finds notes (search `diaper` finds that Shopee item).
 
+## Part L — Pay a card bill in parts (v3.2)
+
+1. In Supabase → **SQL Editor** → **New query**, paste everything from `database/9-bank-payments.sql` and click **Run**. It only creates one new table. It's safe to run twice.
+2. Home → tap the card → **Payments to the bank**:
+   - **Amount paid** (it starts with what's left), **Paid on**, **Paid from** (e.g. Bank app, GCash) → **＋ Add this payment**.
+   - Add one payment for each part, e.g. ₱8,000 via Bank app, then ₱7,038.34 via GCash.
+3. The card shows **Paid ₱8,000.00 · ₱7,038.34 left** until the parts add up to the bill, then **Paid ✓**.
+4. Cash outlook counts only what's left. A payment dated later than today shows as a **planned** part on its own date.
+5. After you pay, also update **Money you have now** (Money → Cash outlook) with your new balance.
+6. Bills you ticked as paid before v3.2 stay paid. Open the card and tap **Undo** to untick one.
+
 ---
 
 ## Good to know

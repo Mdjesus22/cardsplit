@@ -199,10 +199,10 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '3.1';
+const VERSION = '3.2';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
-const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves'];
+const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves','bank_payments'];
 const OPT_TABLES = ['categories','recurring','entries'];   // Money tab — created by 3-money.sql
 const VAULT_TABLES = ['vault_loans','vault_moves'];           // Safety box — created by 5-safety-box.sql
 const SETNULL = { recurring:[['entries','recurring_id']], charges:[['vault_loans','charge_id']] };
@@ -269,7 +269,7 @@ function makeSupabaseDB(sb) {
             rows = rows.concat(data); if (data.length < 1000) break; from += 1000;
           }
           out[t] = rows;
-        } catch (e) { if (OPT_TABLES.includes(t) || VAULT_TABLES.includes(t)) out[t] = null; else throw e; }   // optional tables not created yet
+        } catch (e) { if (OPT_TABLES.includes(t) || VAULT_TABLES.includes(t) || t === 'bank_payments') out[t] = null; else throw e; }   // optional tables not created yet
       }));
       return out;
     },
@@ -305,6 +305,7 @@ function reindex() {
   IX.sharesByInst = groupBy(S.installment_shares, 'installment_id');
   IX.txByInst = groupBy(S.transactions.filter(t => t.installment_id), 'installment_id');
   IX.stmt = new Map(S.statements.map(s => [s.card_id + '|' + s.month, s]));
+  IX.bp = new Map(); for (const x of (S.bank_payments || [])) { const k = x.card_id + '|' + x.month; if (!IX.bp.has(k)) IX.bp.set(k, []); IX.bp.get(k).push(x); }
   IX.me = (S.people.find(p => p.kind === 'me') || {}).id;
   IX.cat = new Map((S.categories || []).map(r => [r.id, r]));
   IX.vaultByCharge = new Map((S.vault_loans || []).filter(l => l.charge_id).map(l => [l.charge_id, l]));
@@ -544,13 +545,14 @@ function viewHome() {
   const cardIds = [...new Set([...S.cards.filter(c => c.active).map(c => c.id), ...txs.map(t => t.card_id)])];
   const cardRows = cardIds.map(id => {
     const ct = txs.filter(t => t.card_id === id); const cch = ct.flatMap(t => IX.chargesByTx.get(t.id) || []).filter(live);
-    const st = IX.stmt.get(id + '|' + m); const due = dueDate(id, m); const paid = !!st?.paid_to_bank;
+    const st = IX.stmt.get(id + '|' + m); const due = dueDate(id, m); const bp = billPaid(id, m, billEstimate(id, m).amt), paid = bp.full;
     let badge = '';
     if (paid) badge = `<span class="pill green">Paid ✓</span>`;
     else if (due && ct.length) { const d = daysBetween(today, due); badge = d < 0 ? `<span class="pill red">Overdue ${-d}d</span>` : d <= 7 ? `<span class="pill amber">Due in ${d}d</span>` : `<span class="pill">Due in ${d}d</span>`; }
     return `<div class="item" data-action="openStmt" data-card="${id}">${cardGlyph(id)}
       <div class="grow"><div class="b ell">${esc(cardLabel(id))}</div>
         <div class="small muted">Due ${due ? dateLabelY(due) : '— set due day'} · ${ct.length} item${ct.length === 1 ? '' : 's'}</div>
+        ${!paid && bp.paid > 0.004 ? `<div class="small b" style="color:var(--unpaid)">Paid ${peso(bp.paid)} · ${peso(bp.left)} left</div>` : ''}
         <div class="small muted">Mine ${peso(sum(cch.filter(c => isMe(c.person_id)), c => c.amount))} · Others ${peso(sum(cch.filter(c => !isMe(c.person_id)), c => c.amount))}</div></div>
       <div class="right">${stmtTotals(st, sum(ct, t => t.amount))}${badge}</div></div>`;
   }).join('');
@@ -835,12 +837,31 @@ function openStmt(cardId) {
         <label class="f"><span>Total due on bill (optional)</span><input class="in" type="number" step="0.01" data-k="total_due" value="${esc(d.total_due)}"></label>
         <label class="f"><span>Minimum due (optional)</span><input class="in" type="number" step="0.01" data-k="min_due" value="${esc(d.min_due)}"></label>
       </div>
-      <label class="f row"><input type="checkbox" id="ptb" ${d.paid_to_bank ? 'checked' : ''} style="width:22px;height:22px"> <span style="margin:0;font-size:15px;color:var(--ink)">I paid this bill to the bank</span></label>
+      ${S._bp ? bankPayBox(cardId, m, d) : `<label class="f row"><input type="checkbox" id="ptb" ${d.paid_to_bank ? 'checked' : ''} style="width:22px;height:22px"> <span style="margin:0;font-size:15px;color:var(--ink)">I paid this bill to the bank</span></label>
       <label class="f"><span>Paid on</span><input class="in" type="date" data-k="paid_on" value="${esc(d.paid_on)}"></label>
+      <p class="small muted">To record a bill paid in parts (e.g. bank app + GCash), run <b>database/9-bank-payments.sql</b> in Supabase (SETUP Part L).</p>`}
       <label class="f"><span>Note</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
       <button class="btn block" data-action="filterCard" data-card="${cardId}">See this card's transactions</button>`,
     foot: () => `<div class="grow"><button class="btn" data-action="closeSheet">Cancel</button><button class="btn pri" data-action="saveStmt" data-card="${cardId}">Save</button></div>`,
-    mount: o => { bindDraft(o, d); o.querySelector('#ptb').addEventListener('change', e => { d.paid_to_bank = e.target.checked; if (e.target.checked && !d.paid_on) { d.paid_on = todayISO(); o.querySelector('[data-k=paid_on]').value = d.paid_on; } }); } });
+    mount: o => { bindDraft(o, d); o.querySelector('#ptb')?.addEventListener('change', e => { d.paid_to_bank = e.target.checked; if (e.target.checked && !d.paid_on) { d.paid_on = todayISO(); o.querySelector('[data-k=paid_on]').value = d.paid_on; } }); } });
+}
+
+function bankPayBox(cardId, m, d) {
+  const pays = bankPays(cardId, m), today = todayISO();
+  const billAmt = d.total_due !== '' && d.total_due != null && num(d.total_due) > 0 ? r2(num(d.total_due)) : billEstimate(cardId, m).amt;
+  const paid = r2(sum(pays, x => x.amount)), full = d.paid_to_bank || (paid > 0.004 && paid >= billAmt - 0.01), left = full ? 0 : r2(Math.max(0, billAmt - paid));
+  const froms = [...new Set(['Bank app', 'GCash', 'Maya', ...S.bank_payments.map(x => x.paid_from).filter(Boolean)])];
+  return `<div class="sec">Payments to the bank</div>
+    <div class="card list">${pays.map(x => `<div class="item" style="cursor:default"><div class="grow"><div class="b">${peso(x.amount)}</div>
+        <div class="small muted">${dateLabelY(x.paid_on)}${x.paid_from ? ' · ' + esc(x.paid_from) : ''}${x.paid_on > today ? ' · planned' : ''}</div></div>
+        <button class="linkish" data-action="rmBankPay" data-id="${x.id}">Remove</button></div>`).join('')
+      || (d.paid_to_bank ? `<div class="item" style="cursor:default"><div class="grow small">Marked fully paid${d.paid_on ? ' on ' + dateLabelY(d.paid_on) : ''}.</div><button class="linkish" data-action="undoPaidTick">Undo</button></div>` : '<div class="empty">No payments yet</div>')}</div>
+    <div class="sumline${full || billAmt <= 0.004 ? '' : ' bad'}">${full ? `Fully paid ✓${paid > 0.004 ? ' · ' + peso(paid) : ''}` : billAmt <= 0.004 && paid <= 0.004 ? 'Nothing billed yet' : `Paid ${peso(paid)} of ${peso(billAmt)} · <b>${peso(left)} left</b>`}</div>
+    ${full ? '' : `<div class="grid2">
+      <label class="f"><span>Amount paid (₱)</span><input class="in" type="number" inputmode="decimal" step="0.01" data-k="bpAmt" value="${esc(d.bpAmt ?? (left > 0.004 ? left : ''))}"></label>
+      <label class="f"><span>Paid on</span><input class="in" type="date" data-k="bpDate" value="${esc(d.bpDate || today)}"></label></div>
+      <label class="f"><span>Paid from</span><input class="in" data-k="bpFrom" list="bpfrom" value="${esc(d.bpFrom || '')}" placeholder="e.g. Bank app, GCash"><datalist id="bpfrom">${froms.map(f => `<option value="${esc(f)}">`).join('')}</datalist></label>
+      <button class="btn block" data-action="addBankPay" data-card="${cardId}">＋ Add this payment</button>`}`;
 }
 
 /* ---------------- INSTALLMENTS ---------------- */
@@ -1363,6 +1384,13 @@ function viewMoney() {
 }
 /* ---------------- CASH OUTLOOK: money coming in vs bills, to decide on short borrowing ---------------- */
 const moneyTabs = () => `<div class="seg" style="margin-top:6px">${[['sum', 'Summary'], ['out', 'Cash outlook'], ['vault', 'Safety box']].map(([v, l]) => `<button class="${(UI.mTab || 'sum') === v ? 'on' : ''}" data-action="mTab" data-v="${v}">${l}</button>`).join('')}</div>`;
+const bankPays = (cardId, m) => (IX.bp?.get(cardId + '|' + m) || []).slice().sort((a, b) => a.paid_on.localeCompare(b.paid_on) || a.id - b.id);
+// How much of a bill you've paid: payments in parts (bank app, GCash…) or the old "paid in full" tick
+function billPaid(cardId, m, billAmt) {
+  const st = IX.stmt.get(cardId + '|' + m), paid = r2(sum(bankPays(cardId, m), x => x.amount));
+  const full = !!st?.paid_to_bank || (paid > 0.004 && paid >= billAmt - 0.01);
+  return { paid, full, left: full ? 0 : r2(Math.max(0, billAmt - paid)) };
+}
 function billEstimate(cardId, m) {   // amount on the bill if saved, else app total (+ installment months not created yet)
   const proj = S.installments.filter(p => { if (p.card_id !== cardId || p.status !== 'active') return false;
     const no = monthDiff(m, p.first_month) + 1; return no >= 1 && no <= p.months && !(IX.txByInst.get(p.id) || []).some(t => t.installment_no === no); });
@@ -1413,18 +1441,20 @@ function outlookEvents(today, rounds) {
   rounds.forEach((rd, i) => { for (const c of S.cards) {   // card bills of this round's statement: full amount you pay the bank
     if (c.kind === 'bill') continue;
     const m = rd.s, due = dueDate(c.id, m); if (due && due < today) continue;   // due date passed: treated as paid
-    if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
     const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
+    const bp = billPaid(c.id, m, bill.amt), act = `data-action="outStmt" data-card="${c.id}" data-m="${m}"`;
+    for (const x of bankPays(c.id, m)) if (x.paid_on > today) ev.push({ r: i, date: clamp(x.paid_on, i), amt: -Number(x.amount), label: `${cardLabel(c.id)} bill (part)`, sub: `${monthLabel(m)} statement · planned${x.paid_from ? ' · ' + x.paid_from : ''}`, action: act });
+    if (bp.full) continue;
     const date = clamp(due || rd.end, i);
-    ev.push({ r: i, date, amt: -bill.amt, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+    ev.push({ r: i, date, amt: -bp.left, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}${bp.paid > 0.004 ? ` · ${peso(bp.paid)} already paid` : ''}`, action: act });
     addProj(bill, m, i, date);
   } });
   for (const c of S.cards) { if (c.kind !== 'bill') continue;   // outside bills (paid in cash): in the round of their due date
     for (let m = addMonths(monthOf(today), -2); m <= monthOf(end); m = addMonths(m, 1)) {
       const due = dueDate(c.id, m); if (!due || due < today || due > end) continue;
-      if (IX.stmt.get(c.id + '|' + m)?.paid_to_bank) continue;
       const bill = billEstimate(c.id, m), i = byDate(due); if (bill.amt <= 0.004 || i < 0) continue;
-      ev.push({ r: i, date: due, amt: -bill.amt, label: c.bank || c.code, sub: `Outside bill (cash) · ${monthLabel(addMonths(m, 1))}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+      const bp = billPaid(c.id, m, bill.amt); if (bp.full) continue;
+      ev.push({ r: i, date: due, amt: -bp.left, label: c.bank || c.code, sub: `Outside bill (cash) · ${monthLabel(addMonths(m, 1))}${bp.paid > 0.004 ? ` · ${peso(bp.paid)} already paid` : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
       addProj(bill, m, i, due);
     } }
   // Riders: everything they still owe counts. With a promise date: on that date. Without: in the round of its statement, by the bill's due date.
@@ -2213,6 +2243,12 @@ const A = {
   markAllPaid: async () => { const d = SHEETS[SHEETS.length - 1].draft;
     const rows = d.charges.filter(c => c.id).map(c => IX.charge.get(c.id)).filter(c => c && live(c) && !isMe(c.person_id) && balance(c) > 0.004).map(c => ({ charge_id: c.id, amount: balance(c), received_on: todayISO(), note: 'Marked paid' }));
     if (!rows.length) return; await ins('collections', rows); redrawTop(); render(); toast('Marked paid'); },
+  addBankPay: async el => { const d = SHEETS[SHEETS.length - 1].draft, amt = r2(num(d.bpAmt ?? '')) || r2(num(el.closest('.sheet')?.querySelector('[data-k=bpAmt]')?.value));
+    if (!(amt > 0)) return toast('Type the amount you paid');
+    try { await ins('bank_payments', [{ card_id: +el.dataset.card, month: UI.month, amount: amt, paid_on: d.bpDate || todayISO(), paid_from: (d.bpFrom || '').trim() || null }]);
+      const later = (d.bpDate || todayISO()) > todayISO(); delete d.bpAmt; redrawTop(); render(); toast(later ? 'Planned payment added' : 'Payment added. Update "Money you have now" too.'); } catch (e) { toast('Could not save: ' + (e.message || e)); } },
+  rmBankPay: async el => { if (!(await ask('Remove this payment to the bank?', 'Remove', true))) return; await del('bank_payments', +el.dataset.id); redrawTop(); render(); },
+  undoPaidTick: () => { const d = SHEETS[SHEETS.length - 1].draft; d.paid_to_bank = false; d.paid_on = ''; redrawTop(); toast('Tap Save to keep this'); },
   saveStmt: async el => { const d = SHEETS[SHEETS.length - 1].draft; const cardId = +el.dataset.card; const st = IX.stmt.get(cardId + '|' + UI.month);
     const row = { due_date: d.due_date || null, total_due: num(d.total_due), min_due: num(d.min_due), paid_to_bank: !!d.paid_to_bank, paid_on: d.paid_on || null, note: (d.note || '').trim() || null };
     try { if (st) await upd('statements', st.id, row); else await ins('statements', [{ ...row, card_id: cardId, month: UI.month }]); closeSheet(); render(); toast('Saved'); }
@@ -2338,6 +2374,7 @@ async function loadData() {
     S = await db.loadAll();
     S._money = OPT_TABLES.every(t => Array.isArray(S[t])); for (const t of OPT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
     S._vault = VAULT_TABLES.every(t => Array.isArray(S[t])); for (const t of VAULT_TABLES) if (!Array.isArray(S[t])) S[t] = [];
+    S._bp = Array.isArray(S.bank_payments); if (!S._bp) S.bank_payments = [];   // 9-bank-payments.sql
     S._exp = S._money && await db.hasExpected().catch(() => false);
     S._dp = await db.hasCol('installment_shares', 'downpayment').catch(() => false);
     S._bills = await db.hasCol('cards', 'kind').catch(() => false);
