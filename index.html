@@ -199,7 +199,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '3.2';
+const VERSION = '3.3';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves','bank_payments'];
@@ -273,7 +273,7 @@ function makeSupabaseDB(sb) {
       }));
       return out;
     },
-    async insert(t, rows) { const { data, error } = await sb.from(t).insert(rows).select(); if (error) throw error; return data; },
+    async insert(t, rows) { const { data, error } = await sb.from(t).insert(rows, { defaultToNull: false }).select(); if (error) throw error; return data; },
     async update(t, id, patch) { const { data, error } = await sb.from(t).update(patch).eq('id', id).select().single(); if (error) throw error; return data; },
     async remove(t, id) { const { error } = await sb.from(t).delete().eq('id', id); if (error) throw error; },
     async hasExpected() { const { error } = await sb.from('entries').select('expected').limit(1); return !error; },   // 4-expected.sql run?
@@ -1801,7 +1801,7 @@ async function ensureRecurring() {
         const iso = `${y}-${pad(mo)}-${pad(day)}`;
         if (iso >= from && iso <= today && !S.entries.some(e => e.recurring_id === r.id && e.entry_date === iso))
           rows.push({ kind: r.kind, entry_date: iso, amount: r.amount, category_id: r.category_id, person_id: r.person_id, method: r.method, planned: true, description: r.description, recurring_id: r.id,
-                      ...(S._exp && r.kind === 'income' ? { expected: !!r.generated_until || iso >= today } : {}) });
+                      ...(S._exp ? { expected: r.kind === 'income' && (!!r.generated_until || iso >= today) } : {}) });
       }
     }
     if (r.generated_until !== today) touched.push(r.id);
