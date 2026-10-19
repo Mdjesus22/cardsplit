@@ -199,7 +199,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '3.3';
+const VERSION = '3.4';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves','bank_payments'];
@@ -1422,7 +1422,7 @@ function outlookEvents(today, rounds) {
     ev.push({ r: byDate(iso), date: iso, amt: r.kind === 'income' ? Number(r.amount) : -Number(r.amount), label: r.description, sub: r.kind === 'income' ? 'Expected · recurring' : 'Recurring', action: `data-action="openRec" data-id="${r.id}"` });
   }
   for (const m of S.vault_moves || []) {   // future safety-box moves that touch YOUR money (paybacks never do: they go into the box)
-    if (m.kind === 'repay' || m.move_date > end || (m.kind === 'lend' ? m.move_date < today : m.move_date <= today)) continue;   // today or earlier: already done
+    if (m.kind === 'repay' || m.move_date > end || m.move_date <= today) continue;   // today or earlier: already done (it's in "Money you have now")
     const L = m.loan_id ? (S.vault_loans || []).find(l => l.id === m.loan_id) : null;
     if (m.kind === 'lend' && !L?.charge_id) continue;   // cash lent straight from the box to someone
     const inn = m.kind !== 'deposit';
@@ -1625,6 +1625,7 @@ function openLoan(id, chargeId) {
         <label class="f"><span>First payment</span><input class="in" type="date" data-k="first_due" value="${esc(d.first_due)}"></label>
         <label class="f"><span>Taken from the box on</span><input class="in" type="date" data-k="lend_date" value="${esc(d.lend_date)}"></label>
       </div>
+      <div class="small muted" style="margin:2px 2px 6px">Today or earlier = already taken out (count it in "Money you have now"). A later date shows in Cash outlook as money coming in on that day.</div>
       <div class="small muted" id="loanCalc" style="margin:4px 2px">${loanCalcText(d)}</div>
       <label class="f"><span>Note (optional)</span><input class="in" data-k="note" value="${esc(d.note)}"></label>
       ${v ? `<div class="card" style="margin-top:10px"><div class="b">Record a payment back into the box</div>
