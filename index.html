@@ -199,7 +199,7 @@ const CONFIG = {
   SUPABASE_KEY: 'sb_publishable_gVueHnZaIprCyd3dxlA-Xw_0XoL53hx',   // e.g. 'sb_publishable_xxxxxxxxxxxxxxxx'
 };
 
-const VERSION = '3.4';
+const VERSION = '3.5';
 const params = new URLSearchParams(location.search);
 const DEMO = params.has('demo');
 const TABLES = ['cards','people','statements','installments','installment_shares','transactions','charges','collections','categories','recurring','entries','vault_loans','vault_moves','bank_payments'];
@@ -1443,10 +1443,10 @@ function outlookEvents(today, rounds) {
     const m = rd.s, due = dueDate(c.id, m); if (due && due < today) continue;   // due date passed: treated as paid
     const bill = billEstimate(c.id, m); if (bill.amt <= 0.004) continue;
     const bp = billPaid(c.id, m, bill.amt), act = `data-action="outStmt" data-card="${c.id}" data-m="${m}"`;
-    for (const x of bankPays(c.id, m)) if (x.paid_on > today) ev.push({ r: i, date: clamp(x.paid_on, i), amt: -Number(x.amount), label: `${cardLabel(c.id)} bill (part)`, sub: `${monthLabel(m)} statement · planned${x.paid_from ? ' · ' + x.paid_from : ''}`, action: act });
+    for (const x of bankPays(c.id, m)) if (x.paid_on > today) ev.push({ r: i, date: clamp(x.paid_on, i), amt: -Number(x.amount), label: `${cardLabel(c.id)} bill (part)`, sub: `${monthLabel(m)} statement · planned${x.paid_from ? ' · ' + x.paid_from : ''}`, action: act, bill: true });
     if (bp.full) continue;
     const date = clamp(due || rd.end, i);
-    ev.push({ r: i, date, amt: -bp.left, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}${bp.paid > 0.004 ? ` · ${peso(bp.paid)} already paid` : ''}`, action: act });
+    ev.push({ r: i, date, amt: -bp.left, label: `${cardLabel(c.id)} bill`, sub: `${monthLabel(m)} statement${bill.est ? ' · app total so far' : ''}${bp.paid > 0.004 ? ` · ${peso(bp.paid)} already paid` : ''}`, action: act, bill: true });
     addProj(bill, m, i, date);
   } });
   for (const c of S.cards) { if (c.kind !== 'bill') continue;   // outside bills (paid in cash): in the round of their due date
@@ -1454,7 +1454,7 @@ function outlookEvents(today, rounds) {
       const due = dueDate(c.id, m); if (!due || due < today || due > end) continue;
       const bill = billEstimate(c.id, m), i = byDate(due); if (bill.amt <= 0.004 || i < 0) continue;
       const bp = billPaid(c.id, m, bill.amt); if (bp.full) continue;
-      ev.push({ r: i, date: due, amt: -bp.left, label: c.bank || c.code, sub: `Outside bill (cash) · ${monthLabel(addMonths(m, 1))}${bp.paid > 0.004 ? ` · ${peso(bp.paid)} already paid` : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"` });
+      ev.push({ r: i, date: due, amt: -bp.left, label: c.bank || c.code, sub: `Outside bill (cash) · ${monthLabel(addMonths(m, 1))}${bp.paid > 0.004 ? ` · ${peso(bp.paid)} already paid` : ''}`, action: `data-action="outStmt" data-card="${c.id}" data-m="${m}"`, bill: true });
       addProj(bill, m, i, due);
     } }
   // Riders: everything they still owe counts. With a promise date: on that date. Without: in the round of its statement, by the bill's due date.
@@ -1492,6 +1492,12 @@ function dueRounds(today) {
   if (!out.length) out.push({ m: monthOf(today), s: addMonths(monthOf(today), -1), end: addDays(today, 30) });
   out.forEach((r, i) => { r.from = i ? addDays(out[i - 1].end, 1) : today; });
   return out;
+}
+function coverPill(x) {
+  const before = r2(x.bal - x.amt), need = -x.amt;
+  if (x.bal >= -0.004) return `<div style="margin-top:4px"><span class="pill green">Covered ✓</span></div>`;
+  return before > 0.004 ? `<div style="margin-top:4px"><span class="pill amber">Partly covered · ${peso(-x.bal)} short</span></div>`
+    : `<div style="margin-top:4px"><span class="pill red">Not covered · ${peso(need)} short</span></div>`;
 }
 function viewOutlook() {
   if (UI.cash === undefined) { try { const s = JSON.parse(localStorage.getItem('cs_cash') || 'null'); UI.cash = s ? Number(s.v) : null; UI.cashOn = s?.on || ''; } catch { UI.cash = null; } }
@@ -1538,10 +1544,11 @@ function viewOutlook() {
         <div class="list">${odd.slice(0, 8).map(t => `<div class="item" data-action="openTx" data-id="${t.id}"><div class="grow">${dline(t, false)}<div class="small muted">Bought ${dateLabel(t.txn_date)} · ${esc(cardCode(t.card_id))}</div></div><div class="right b">${peso(t.amount)}</div></div>`).join('')}</div></div>` : ''; })()}
     <div class="sec">${M(r.m)} dues (${monthLabel(r.s)} statement) · in ${peso(r.inSum)} · out ${peso(r.outSum)}</div>
     <div class="card list">${startRow}
-      ${r.rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>
+      ${r.rows.map(x => `<div class="item" ${x.action}><div class="grow"><div class="b ell">${esc(x.label)}</div><div class="small muted">${dateLabel(x.date)} · ${esc(x.sub)}</div>${x.bill && x.amt < 0 ? coverPill(x) : ''}
         ${x.got ? `<button class="btn sm" style="margin-top:6px" data-action="gotEntry" data-id="${x.got}">${x.kind === 'income' ? 'Got it' : 'Paid'}</button>` : ''}</div>
         <div class="right"><div class="b" style="${x.amt > 0 ? 'color:var(--paid)' : ''}">${x.amt > 0 ? '+' : '−'}${peso(Math.abs(x.amt))}</div><div class="small ${x.bal < -0.004 ? 'over' : 'muted'}">${peso(x.bal)}</div></div></div>`).join('')}
       ${r.rows.length ? '' : '<div class="empty">Nothing coming in or going out in this round yet.</div>'}</div>
+    <p class="small muted">"Covered" uses the money you have plus what comes in before each bill's due date, in date order. It's a preview: a bill is paid only when you add it under Payments to the bank.</p>
     <p class="small muted">Card bills are the full amount you pay the bank: the amount on the bill if you saved it, otherwise the app total. Money riders owe counts on its promise date, or by its bill's due date if there's none. Late expected money still counts until you tap Got it or delete it.</p>`;
 }
 document.addEventListener('change', e => {
